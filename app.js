@@ -2845,7 +2845,17 @@ class WikiApp {
             console.log('Saving article:', key, title);
             
             // Save to localStorage and PDS (if connected)
-            await this.storage.saveArticle(key, title, content);
+            try {
+                await this.storage.saveArticle(key, title, content);
+            } catch (err) {
+                console.error('Save error:', err);
+                if (this.storage.storageMode === 'bluesky') {
+                    this.showUpdateNotification('Saved locally; could not sync to Bluesky: ' + (err.message || 'Unknown error'));
+                } else {
+                    throw err;
+                }
+                // Article was saved locally; Bluesky sync failed
+            }
             this.articles[key] = { title, content };
             
             // Save metadata
@@ -2962,11 +2972,24 @@ class WikiApp {
             btn.textContent = 'Starting…';
         }
         try {
+            const isPublishedOrigin = window.location.origin === 'https://slrgt.github.io' && (window.location.pathname || '').startsWith('/wikisky');
+            if (!isPublishedOrigin && window.location.origin !== 'null' && window.location.origin !== 'file:') {
+                const proceed = confirm('Bluesky login will redirect you to sign in, then back to the published app (https://slrgt.github.io/wikisky/). Use the app from that URL to sync with Bluesky. Continue?');
+                if (!proceed) {
+                    if (btn) { btn.disabled = false; btn.textContent = 'Continue to Bluesky Login'; }
+                    return;
+                }
+            }
             await this.storage.startBlueskyOAuth(handle);
-            // User will be redirected to Bluesky; if we get here, something failed
-            alert('Failed to start Bluesky login. Ensure this app is opened from its published URL (e.g. GitHub Pages).');
+            // User will be redirected to Bluesky; if we get here, redirect was blocked
+            alert('Redirect was blocked. Please allow popups/redirects, or open the app from its published URL: https://slrgt.github.io/wikisky/');
         } catch (error) {
-            alert('Failed to start Bluesky login: ' + (error.message || 'Unknown error'));
+            const msg = error.message || 'Unknown error';
+            if (/redirect_uri|PAR|invalid/i.test(msg)) {
+                alert('Bluesky login failed: use the app from its published URL (https://slrgt.github.io/wikisky/) to sign in.');
+            } else {
+                alert('Failed to start Bluesky login: ' + msg);
+            }
         } finally {
             if (btn) {
                 btn.disabled = false;
@@ -6803,7 +6826,8 @@ ${document.body.innerHTML}
             }
         } catch (err) {
             console.error('Browse feed error:', err);
-            loadingEl.textContent = 'Could not load feed. Check your connection or try again.';
+            const msg = err && err.message ? err.message : 'Check your connection or try again.';
+            loadingEl.textContent = 'Could not load feed. ' + msg;
             loadingEl.style.display = 'block';
         }
         

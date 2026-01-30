@@ -195,17 +195,23 @@ class WikiStorage {
     }
 
     // --- AT Protocol OAuth (PAR + PKCE + DPoP) ---
+    // Published app URL for OAuth (must match redirect_uris in oauth-client-metadata.json).
+    // When not on this origin (e.g. file:// or localhost), we still use it so login redirects to the published app.
     _oauthBaseUrl() {
+        const published = 'https://slrgt.github.io/wikisky';
         const origin = window.location.origin;
-        const path = (window.location.pathname || '/').replace(/\/$/, '') || '';
-        return origin + path;
+        if (!origin || origin === 'null' || origin === 'file:') return published;
+        if (origin === 'https://slrgt.github.io' && (window.location.pathname || '').startsWith('/wikisky')) {
+            return published;
+        }
+        return published;
     }
     _oauthClientId() {
         return this._oauthBaseUrl() + '/oauth-client-metadata.json';
     }
     _oauthRedirectUri() {
         const base = this._oauthBaseUrl();
-        return base + (window.location.pathname && window.location.pathname !== '/' ? '/' : '');
+        return base.endsWith('/') ? base : base + '/';
     }
     async _sha256Bytes(data) {
         const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
@@ -715,45 +721,49 @@ class WikiStorage {
     }
 
     async saveArticleToBluesky(key, title, content) {
-        try {
-            // Use standard AT Protocol schema (like pckt.blog uses standard.site)
-            const recordData = {
-                $type: 'com.atproto.repo.record',
-                key: key,
-                title: title,
-                content: content,
-                createdAt: new Date().toISOString()
-            };
+        // Use standard AT Protocol schema (like pckt.blog uses standard.site)
+        const recordData = {
+            $type: 'com.atproto.repo.record',
+            key: key,
+            title: title,
+            content: content,
+            createdAt: new Date().toISOString()
+        };
 
-            // Check if record exists
-            const existing = await this.getArticleFromBluesky(key);
+        // Check if record exists
+        const existing = await this.getArticleFromBluesky(key);
 
-            if (existing) {
-                // Update existing
-                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        repo: this.blueskyClient.did,
-                        collection: 'com.atproto.repo.record',
-                        rkey: key,
-                        record: recordData
-                    })
-                });
-            } else {
-                // Create new
-                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        repo: this.blueskyClient.did,
-                        collection: 'com.atproto.repo.record',
-                        record: recordData
-                    })
-                });
+        if (existing) {
+            // Update existing
+            const putRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    repo: this.blueskyClient.did,
+                    collection: 'com.atproto.repo.record',
+                    rkey: key,
+                    record: recordData
+                })
+            });
+            if (!putRes.ok) {
+                const err = await putRes.json().catch(() => ({}));
+                throw new Error(err.message || err.error || 'Failed to save to Bluesky');
             }
-        } catch (error) {
-            console.error('Error saving to Bluesky:', error);
+        } else {
+            // Create new
+            const createRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    repo: this.blueskyClient.did,
+                    collection: 'com.atproto.repo.record',
+                    record: recordData
+                })
+            });
+            if (!createRes.ok) {
+                const err = await createRes.json().catch(() => ({}));
+                throw new Error(err.message || err.error || 'Failed to save to Bluesky');
+            }
         }
     }
 
@@ -1733,9 +1743,10 @@ class WikiStorage {
             const postUri = post?.uri || '';
             const embed = post?.embed;
             if (!embed || !did) continue;
-            if (embed.images && Array.isArray(embed.images)) {
-                for (let i = 0; i < embed.images.length; i++) {
-                    const img = embed.images[i];
+            const imagesList = embed.images && Array.isArray(embed.images) ? embed.images : (embed.media && embed.media.images && Array.isArray(embed.media.images) ? embed.media.images : null);
+            if (imagesList) {
+                for (let i = 0; i < imagesList.length; i++) {
+                    const img = imagesList[i];
                     const ref = img?.image?.ref || img?.ref;
                     const cid = ref?.$link || ref;
                     if (!cid) continue;
