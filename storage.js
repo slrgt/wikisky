@@ -125,11 +125,15 @@ class WikiStorage {
                         }
                     } catch (error) {
                         console.error('Error refreshing session:', error);
-                        if (session.oauth) {
+                        // Don't clear session on refresh failure (e.g. network) so user stays "logged in" and we can retry on next load
+                        const isInvalidGrant = (error.message || '').toLowerCase().includes('invalid_grant') || (error.message || '').toLowerCase().includes('expired');
+                        if (session.oauth && isInvalidGrant) {
                             localStorage.removeItem('bluesky-oauth-dpop-private-jwk');
                             localStorage.removeItem('bluesky-oauth-dpop-public-jwk');
+                            localStorage.removeItem('bluesky-session');
                         }
-                        localStorage.removeItem('bluesky-session');
+                        this.blueskyClient = null;
+                        this.storageMode = 'local';
                     }
                 }
             }
@@ -177,7 +181,8 @@ class WikiStorage {
         }
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            throw new Error(err.error_description || err.error || 'Token refresh failed');
+            const msg = err.error_description || err.error || 'Token refresh failed';
+            throw new Error(msg);
         }
         const data = await res.json();
         const newNonce = res.headers.get('dpop-nonce') || res.headers.get('DPoP-Nonce');
@@ -310,10 +315,12 @@ class WikiStorage {
         const privateJwk = await this._exportKeyJwk(keypair.privateKey);
         const publicJwk = await this._exportKeyJwk(keypair.publicKey);
 
-        const parBody = new URLSearchParams({
+        const scopePreferred = 'atproto repo:site.standard.document repo:com.atproto.repo.record';
+        const scopeFallback = 'atproto transition:generic';
+        let parBody = new URLSearchParams({
             response_type: 'code',
             code_challenge_method: 'S256',
-            scope: 'atproto transition:generic',
+            scope: scopePreferred,
             client_id: clientId,
             redirect_uri: redirectUri,
             code_challenge: codeChallenge,
@@ -343,7 +350,37 @@ class WikiStorage {
         }
         if (!parRes.ok) {
             const err = await parRes.json().catch(() => ({}));
-            throw new Error(err.error_description || err.error || 'PAR failed');
+            const errMsg = (err.error_description || err.error || '').toLowerCase();
+            if ((err.error === 'invalid_scope' || errMsg.includes('scope')) && scopePreferred.includes('repo:')) {
+                parBody = new URLSearchParams({
+                    response_type: 'code',
+                    code_challenge_method: 'S256',
+                    scope: scopeFallback,
+                    client_id: clientId,
+                    redirect_uri: redirectUri,
+                    code_challenge: codeChallenge,
+                    state,
+                    login_hint: handle
+                });
+                parRes = await fetch(parEndpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: parBody.toString()
+                });
+                if (parRes.status === 401 && parRes.headers.get('dpop-nonce')) {
+                    const privateKey = await this._importPrivateKeyJwk(privateJwk);
+                    const dpopProof = await this._buildDpopProof('POST', parEndpoint, parRes.headers.get('dpop-nonce'), privateKey, publicJwk);
+                    parRes = await fetch(parEndpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'DPoP': dpopProof },
+                        body: parBody.toString()
+                    });
+                }
+            }
+            if (!parRes.ok) {
+                const err2 = await parRes.json().catch(() => ({}));
+                throw new Error(err2.error_description || err2.error || 'PAR failed');
+            }
         }
         const parData = await parRes.json();
         const requestUri = parData.request_uri;
@@ -618,10 +655,10 @@ class WikiStorage {
         return { ...this.articles };
     }
 
-    // Get articles from Bluesky PDS
+    // Get articles from Bluesky PDS (site.standard.document lexicon, same as standard.site / pckt.blog)
     async getAllArticlesFromBluesky() {
         try {
-            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.listRecords?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record`);
+            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.listRecords?repo=${this.blueskyClient.did}&collection=site.standard.document`);
 
             if (!response.ok) {
                 return {};
@@ -631,10 +668,12 @@ class WikiStorage {
             const articles = {};
             if (data.records) {
                 data.records.forEach(record => {
-                    if (record.value && record.value.key) {
-                        articles[record.value.key] = {
-                            title: record.value.title || '',
-                            content: record.value.content || ''
+                    const val = record.value;
+                    const path = val?.path || record.rkey;
+                    if (path) {
+                        articles[path] = {
+                            title: val.title || '',
+                            content: val.content || ''
                         };
                     }
                 });
@@ -668,16 +707,17 @@ class WikiStorage {
 
     async getArticleFromBluesky(key) {
         try {
-            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${key}`);
+            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(key)}`);
 
             if (!response.ok) {
                 return null;
             }
 
             const data = await response.json();
+            const val = data.value;
             return {
-                title: data.value.title || '',
-                content: data.value.content || ''
+                title: val.title || '',
+                content: val.content || ''
             };
         } catch (error) {
             console.error('Error fetching article from Bluesky:', error);
@@ -721,26 +761,24 @@ class WikiStorage {
     }
 
     async saveArticleToBluesky(key, title, content) {
-        // Use standard AT Protocol schema (like pckt.blog uses standard.site)
+        // site.standard.document lexicon (same as standard.site / pckt.blog AT Protocol blog posts)
         const recordData = {
-            $type: 'com.atproto.repo.record',
-            key: key,
+            $type: 'site.standard.document',
+            path: key,
             title: title,
             content: content,
             createdAt: new Date().toISOString()
         };
 
-        // Check if record exists
         const existing = await this.getArticleFromBluesky(key);
 
         if (existing) {
-            // Update existing
             const putRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     repo: this.blueskyClient.did,
-                    collection: 'com.atproto.repo.record',
+                    collection: 'site.standard.document',
                     rkey: key,
                     record: recordData
                 })
@@ -750,13 +788,12 @@ class WikiStorage {
                 throw new Error(err.message || err.error || 'Failed to save to Bluesky');
             }
         } else {
-            // Create new
             const createRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     repo: this.blueskyClient.did,
-                    collection: 'com.atproto.repo.record',
+                    collection: 'site.standard.document',
                     record: recordData
                 })
             });
@@ -790,7 +827,7 @@ class WikiStorage {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     repo: this.blueskyClient.did,
-                    collection: 'com.atproto.repo.record',
+                    collection: 'site.standard.document',
                     rkey: key
                 })
             });

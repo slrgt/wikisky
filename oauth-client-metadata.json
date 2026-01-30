@@ -4,7 +4,7 @@
   "client_uri": "https://slrgt.github.io/wikisky/",
   "application_type": "web",
   "grant_types": ["authorization_code", "refresh_token"],
-  "scope": "atproto transition:generic",
+  "scope": "atproto repo:site.standard.document repo:com.atproto.repo.record",
   "response_types": ["code"],
   "redirect_uris": ["https://slrgt.github.io/wikisky/"],
   "token_endpoint_auth_method": "none",
