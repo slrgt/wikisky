@@ -1720,17 +1720,11 @@ class WikiStorage {
         return `https://bsky.social/xrpc/com.atproto.sync.getBlob?did=${encodeURIComponent(repoDid)}&cid=${encodeURIComponent(cidOnly)}`;
     }
 
-    // Fetch feed from AT Protocol (public API) and extract posts with images/videos for browsing
-    async fetchBrowseFeed(cursor = null, limit = 30) {
-        const feedUri = 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot';
-        let url = `https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed?feed=${encodeURIComponent(feedUri)}&limit=${limit}`;
-        if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
-        const response = await fetch(url);
-        if (!response.ok) throw new Error('Failed to load feed');
-        const data = await response.json();
+    // Parse feed array (getFeed or getTimeline response) into browse items with images/videos
+    _parseFeedToBrowseItems(feed) {
         const items = [];
-        const feed = data.feed || [];
-        for (const item of feed) {
+        const list = feed || [];
+        for (const item of list) {
             const post = item.post;
             const author = post?.author;
             const did = author?.did;
@@ -1779,6 +1773,27 @@ class WikiStorage {
                 }
             }
         }
+        return items;
+    }
+
+    // Fetch feed from AT Protocol. When logged in, uses your Bluesky timeline; otherwise public "what's hot".
+    async fetchBrowseFeed(cursor = null, limit = 30) {
+        if (this.blueskyClient?.accessJwt) {
+            let url = `https://bsky.social/xrpc/app.bsky.feed.getTimeline?limit=${limit}`;
+            if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+            const response = await this._pdsFetch(url);
+            if (!response.ok) throw new Error('Failed to load your feed');
+            const data = await response.json();
+            const items = this._parseFeedToBrowseItems(data.feed || []);
+            return { items, cursor: data.cursor || null };
+        }
+        const feedUri = 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot';
+        let url = `https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed?feed=${encodeURIComponent(feedUri)}&limit=${limit}`;
+        if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Failed to load feed');
+        const data = await response.json();
+        const items = this._parseFeedToBrowseItems(data.feed || []);
         return { items, cursor: data.cursor || null };
     }
 

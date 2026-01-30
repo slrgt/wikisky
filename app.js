@@ -6737,10 +6737,15 @@ ${document.body.innerHTML}
         if (!container) return;
         
         this.currentArticleKey = 'browse';
+        const isLoggedIn = this.storage.storageMode === 'bluesky' && this.storage.blueskyClient?.accessJwt;
+        const browseTitle = isLoggedIn ? 'Your Bluesky feed' : 'Browse AT Protocol';
+        const browseDesc = isLoggedIn
+            ? 'Images and videos from your feed. Add any to your collections.'
+            : 'Discover images and videos from the Bluesky feed. Add any to your collections.';
         container.innerHTML = `
             <div class="browse-page-header">
-                <h1>Browse AT Protocol</h1>
-                <p class="browse-page-desc">Discover images and videos from the Bluesky feed. Add any to your collections.</p>
+                <h1>${browseTitle}</h1>
+                <p class="browse-page-desc">${browseDesc}</p>
                 <div class="browse-loading" id="browse-loading">Loading feed…</div>
             </div>
             <div id="browse-grid" class="archive-page-grid"></div>
