@@ -622,6 +622,12 @@ class WikiApp {
             });
         }
 
+        // Header Bluesky button (left of menu)
+        const headerBlueskyBtn = document.getElementById('header-bluesky-btn');
+        if (headerBlueskyBtn) {
+            headerBlueskyBtn.addEventListener('click', () => this.openBlueskyModal());
+        }
+
         // Sidebar Bluesky connect link
         const sidebarConnectBluesky = document.getElementById('connect-bluesky');
         if (sidebarConnectBluesky) {
@@ -630,6 +636,9 @@ class WikiApp {
                 this.openBlueskyModal();
             });
         }
+
+        // Bluesky handle autocomplete (like pckt.blog)
+        this.setupBlueskyHandleAutocomplete();
 
         // Sidebar Bluesky disconnect button
         const sidebarDisconnectBluesky = document.getElementById('disconnect-bluesky');
@@ -2954,6 +2963,104 @@ class WikiApp {
         document.getElementById('bluesky-modal').style.display = 'flex';
     }
 
+    setupBlueskyHandleAutocomplete() {
+        const input = document.getElementById('bluesky-handle');
+        const listEl = document.getElementById('bluesky-handle-suggestions');
+        if (!input || !listEl) return;
+
+        let debounceTimer = null;
+        let selectedIndex = -1;
+
+        const hideSuggestions = () => {
+            listEl.style.display = 'none';
+            listEl.innerHTML = '';
+            selectedIndex = -1;
+        };
+
+        const showSuggestions = (actors) => {
+            listEl.innerHTML = '';
+            if (!actors || actors.length === 0) {
+                listEl.style.display = 'none';
+                return;
+            }
+            actors.forEach((actor, i) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'bluesky-handle-suggestion';
+                btn.setAttribute('role', 'option');
+                btn.setAttribute('aria-selected', 'false');
+                const handle = actor.handle || '';
+                const name = actor.displayName || actor.name || '';
+                btn.innerHTML = `<span class="handle">@${handle}</span>${name ? `<span class="name">${this.escapeHtml(name)}</span>` : ''}`;
+                btn.addEventListener('click', () => {
+                    input.value = handle;
+                    hideSuggestions();
+                    input.focus();
+                });
+                listEl.appendChild(btn);
+            });
+            listEl.style.display = 'block';
+            selectedIndex = 0;
+            listEl.querySelectorAll('.bluesky-handle-suggestion')[0]?.setAttribute('aria-selected', 'true');
+        };
+
+        input.addEventListener('input', () => {
+            const q = input.value.trim().replace(/^@/, '');
+            clearTimeout(debounceTimer);
+            if (q.length < 2) {
+                hideSuggestions();
+                return;
+            }
+            debounceTimer = setTimeout(async () => {
+                try {
+                    const res = await fetch(`https://public.api.bsky.app/xrpc/app.bsky.actor.searchActorsTypeahead?q=${encodeURIComponent(q)}&limit=8`);
+                    if (!res.ok) { hideSuggestions(); return; }
+                    const data = await res.json();
+                    showSuggestions(data.actors || []);
+                } catch (e) {
+                    hideSuggestions();
+                }
+            }, 200);
+        });
+
+        input.addEventListener('focus', () => {
+            if (listEl.children.length > 0) listEl.style.display = 'block';
+        });
+
+        input.addEventListener('blur', () => {
+            setTimeout(hideSuggestions, 150);
+        });
+
+        input.addEventListener('keydown', (e) => {
+            const options = listEl.querySelectorAll('.bluesky-handle-suggestion');
+            if (options.length === 0) return;
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                selectedIndex = Math.min(selectedIndex + 1, options.length - 1);
+                options.forEach((el, i) => el.setAttribute('aria-selected', i === selectedIndex ? 'true' : 'false'));
+                options[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                selectedIndex = Math.max(selectedIndex - 1, 0);
+                options.forEach((el, i) => el.setAttribute('aria-selected', i === selectedIndex ? 'true' : 'false'));
+                options[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+            } else if (e.key === 'Enter' && selectedIndex >= 0 && options[selectedIndex]) {
+                e.preventDefault();
+                const handle = (options[selectedIndex].querySelector('.handle')?.textContent || '').replace(/^@/, '');
+                if (handle) {
+                    input.value = handle;
+                    hideSuggestions();
+                }
+            } else if (e.key === 'Escape') {
+                hideSuggestions();
+            }
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!listEl.contains(e.target) && e.target !== input) hideSuggestions();
+        });
+    }
+
     closeBlueskyModal() {
         document.getElementById('bluesky-modal').style.display = 'none';
     }
@@ -3245,6 +3352,7 @@ class WikiApp {
         const sidebarConnectBtn = document.getElementById('connect-bluesky');
         const sidebarDisconnectBtn = document.getElementById('disconnect-bluesky');
         const menuRssFeed = document.getElementById('menu-rss-feed');
+        const headerBlueskyBtn = document.getElementById('header-bluesky-btn');
 
         if (this.storage.storageMode === 'bluesky') {
             indicator.textContent = 'Sync Status: Bluesky';
@@ -3254,6 +3362,10 @@ class WikiApp {
             if (sidebarConnectBtn) sidebarConnectBtn.style.display = 'none';
             if (sidebarDisconnectBtn) sidebarDisconnectBtn.style.display = 'block';
             if (menuRssFeed) menuRssFeed.style.display = 'flex';
+            if (headerBlueskyBtn) {
+                headerBlueskyBtn.title = 'Bluesky (connected)';
+                headerBlueskyBtn.setAttribute('aria-label', 'Bluesky connected');
+            }
         } else {
             indicator.textContent = 'Sync Status: Local Only';
             indicator.className = 'storage-mode-local';
@@ -3262,6 +3374,10 @@ class WikiApp {
             if (sidebarConnectBtn) sidebarConnectBtn.style.display = 'block';
             if (sidebarDisconnectBtn) sidebarDisconnectBtn.style.display = 'none';
             if (menuRssFeed) menuRssFeed.style.display = 'flex';
+            if (headerBlueskyBtn) {
+                headerBlueskyBtn.title = 'Login with Bluesky';
+                headerBlueskyBtn.setAttribute('aria-label', 'Login with Bluesky');
+            }
         }
     }
 

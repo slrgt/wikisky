@@ -137,9 +137,83 @@ body {
     padding-bottom: 0.75em;
     border-bottom: 1px solid #eaecf0;
     display: flex;
+    align-items: center;
     justify-content: flex-end;
+    gap: 0.5em;
     position: relative;
     z-index: 104;
+}
+
+/* Header Bluesky button - blends in, no outline */
+.header-bluesky-btn {
+    background: none;
+    border: none;
+    outline: none;
+    cursor: pointer;
+    padding: 0.5em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 40px;
+    width: 40px;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+    color: #0645ad;
+}
+.header-bluesky-btn:hover {
+    background-color: #eaecf0;
+    color: #0b0080;
+}
+.header-bluesky-btn:focus {
+    outline: none;
+}
+.header-bluesky-icon {
+    width: 20px;
+    height: 18px;
+}
+
+/* Bluesky handle autocomplete */
+.bluesky-handle-group {
+    position: relative;
+}
+.bluesky-handle-suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 2px;
+    background: #fff;
+    border: 1px solid #a7d7f9;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    max-height: 200px;
+    overflow-y: auto;
+    z-index: 1000;
+}
+.bluesky-handle-suggestion {
+    padding: 0.5em 0.75em;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15em;
+    border: none;
+    background: none;
+    width: 100%;
+    text-align: left;
+    font-size: 14px;
+    color: #202122;
+}
+.bluesky-handle-suggestion:hover,
+.bluesky-handle-suggestion[aria-selected="true"] {
+    background-color: #f0f8ff;
+}
+.bluesky-handle-suggestion .handle {
+    font-weight: 500;
+    color: #0645ad;
+}
+.bluesky-handle-suggestion .name {
+    font-size: 12px;
+    color: #54595d;
 }
 
 /* Menu Button */
