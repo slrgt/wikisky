@@ -40,9 +40,7 @@ class WikiStorage {
         if (!this.blueskyClient?.accessJwt) return;
         try {
             await this.ensureValidToken();
-            const res = await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`, {
-                headers: { 'Authorization': `Bearer ${this.blueskyClient.accessJwt}` }
-            });
+            const res = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
             if (!res.ok) return;
             const data = await res.json();
             const content = data.value?.content;
@@ -96,40 +94,41 @@ class WikiStorage {
         }
     }
 
-    // Load saved Bluesky connection (using refresh token)
+    // Load saved Bluesky connection (refresh token or OAuth)
     async loadBlueskyConnection() {
         try {
             const saved = localStorage.getItem('bluesky-session');
             if (saved) {
                 const session = JSON.parse(saved);
-                // Try to refresh the session using stored refresh token
                 if (session.refreshJwt) {
                     try {
-                        const response = await fetch('https://bsky.social/xrpc/com.atproto.server.refreshSession', {
-                            method: 'POST',
-                            headers: {
-                                'Authorization': `Bearer ${session.refreshJwt}`
+                        if (session.oauth && localStorage.getItem('bluesky-oauth-dpop-private-jwk')) {
+                            await this._oauthRefresh();
+                        } else {
+                            const response = await fetch('https://bsky.social/xrpc/com.atproto.server.refreshSession', {
+                                method: 'POST',
+                                headers: { 'Authorization': `Bearer ${session.refreshJwt}` }
+                            });
+                            if (response.ok) {
+                                const data = await response.json();
+                                this.blueskyClient = {
+                                    did: session.did,
+                                    handle: session.handle,
+                                    accessJwt: data.accessJwt,
+                                    refreshJwt: data.refreshJwt,
+                                    tokenTimestamp: Date.now()
+                                };
+                                this.storageMode = 'bluesky';
+                                session.refreshJwt = data.refreshJwt;
+                                localStorage.setItem('bluesky-session', JSON.stringify(session));
                             }
-                        });
-
-                        if (response.ok) {
-                            const data = await response.json();
-                            this.blueskyClient = {
-                                did: session.did,
-                                handle: session.handle,
-                                accessJwt: data.accessJwt,
-                                refreshJwt: data.refreshJwt,
-                                tokenTimestamp: Date.now()
-                            };
-                            this.storageMode = 'bluesky';
-                            
-                            // Update stored session
-                            session.refreshJwt = data.refreshJwt;
-                            localStorage.setItem('bluesky-session', JSON.stringify(session));
                         }
                     } catch (error) {
                         console.error('Error refreshing session:', error);
-                        // Clear invalid session
+                        if (session.oauth) {
+                            localStorage.removeItem('bluesky-oauth-dpop-private-jwk');
+                            localStorage.removeItem('bluesky-oauth-dpop-public-jwk');
+                        }
                         localStorage.removeItem('bluesky-session');
                     }
                 }
@@ -139,98 +138,318 @@ class WikiStorage {
         }
     }
 
-    // Start OAuth flow - redirect to Bluesky (using AT Protocol OAuth)
-    startBlueskyOAuth(handle) {
-        // Generate a random state for security
-        const state = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-        localStorage.setItem('bluesky-oauth-state', state);
-        localStorage.setItem('bluesky-oauth-handle', handle);
-
-        // Get current origin for redirect
-        const redirectUri = window.location.origin + window.location.pathname;
-        
-        // Use the current page URL as client_id (AT Protocol allows this)
-        const clientId = redirectUri;
-        
-        // Build OAuth URL - redirect to Bluesky's authorization page
-        const oauthUrl = `https://bsky.social/xrpc/com.atproto.server.requestOAuth?` +
-            `client_id=${encodeURIComponent(clientId)}&` +
-            `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-            `response_type=code&` +
-            `state=${state}&` +
-            `scope=atproto`;
-
-        // Redirect to Bluesky OAuth page
-        window.location.href = oauthUrl;
+    async _oauthRefresh() {
+        const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
+        const tokenEndpoint = 'https://bsky.social/oauth/token';
+        const clientId = this._oauthClientId();
+        const privateJwk = localStorage.getItem('bluesky-oauth-dpop-private-jwk');
+        const publicJwk = localStorage.getItem('bluesky-oauth-dpop-public-jwk');
+        if (!session.refreshJwt || !privateJwk || !publicJwk) throw new Error('OAuth session incomplete');
+        const privateKey = await this._importPrivateKeyJwk(JSON.parse(privateJwk));
+        const publicKeyJwk = JSON.parse(publicJwk);
+        let nonce = localStorage.getItem('bluesky-dpop-nonce') || '';
+        let dpopProof = await this._buildDpopProof('POST', tokenEndpoint, nonce || undefined, privateKey, publicKeyJwk);
+        let res = await fetch(tokenEndpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'DPoP': dpopProof },
+            body: new URLSearchParams({
+                grant_type: 'refresh_token',
+                refresh_token: session.refreshJwt,
+                client_id: clientId
+            }).toString()
+        });
+        if (res.status === 401) {
+            const err = await res.json().catch(() => ({}));
+            nonce = res.headers.get('dpop-nonce') || res.headers.get('DPoP-Nonce') || '';
+            if (err.error === 'use_dpop_nonce' && nonce) {
+                localStorage.setItem('bluesky-dpop-nonce', nonce);
+                dpopProof = await this._buildDpopProof('POST', tokenEndpoint, nonce, privateKey, publicKeyJwk);
+                res = await fetch(tokenEndpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'DPoP': dpopProof },
+                    body: new URLSearchParams({
+                        grant_type: 'refresh_token',
+                        refresh_token: session.refreshJwt,
+                        client_id: clientId
+                    }).toString()
+                });
+            }
+        }
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error_description || err.error || 'Token refresh failed');
+        }
+        const data = await res.json();
+        const newNonce = res.headers.get('dpop-nonce') || res.headers.get('DPoP-Nonce');
+        if (newNonce) localStorage.setItem('bluesky-dpop-nonce', newNonce);
+        this.blueskyClient = {
+            did: session.did,
+            handle: session.handle,
+            accessJwt: data.access_token,
+            refreshJwt: data.refresh_token,
+            tokenTimestamp: Date.now()
+        };
+        session.refreshJwt = data.refresh_token;
+        localStorage.setItem('bluesky-session', JSON.stringify(session));
+        this.storageMode = 'bluesky';
     }
 
-    // Handle OAuth callback
+    // --- AT Protocol OAuth (PAR + PKCE + DPoP) ---
+    _oauthBaseUrl() {
+        const origin = window.location.origin;
+        const path = (window.location.pathname || '/').replace(/\/$/, '') || '';
+        return origin + path;
+    }
+    _oauthClientId() {
+        return this._oauthBaseUrl() + '/oauth-client-metadata.json';
+    }
+    _oauthRedirectUri() {
+        const base = this._oauthBaseUrl();
+        return base + (window.location.pathname && window.location.pathname !== '/' ? '/' : '');
+    }
+    async _sha256Bytes(data) {
+        const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+        const hash = await crypto.subtle.digest('SHA-256', bytes);
+        return new Uint8Array(hash);
+    }
+    _base64urlEncode(bytes) {
+        const bin = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : new Uint8Array(bytes);
+        let binary = '';
+        for (let i = 0; i < bin.length; i++) binary += String.fromCharCode(bin[i]);
+        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    async _pkceChallenge(verifier) {
+        const hash = await this._sha256Bytes(verifier);
+        return this._base64urlEncode(hash);
+    }
+    async _generateDpopKeypair() {
+        return await crypto.subtle.generateKey(
+            { name: 'ECDSA', namedCurve: 'P-256' },
+            true,
+            ['sign', 'verify']
+        );
+    }
+    async _exportKeyJwk(key) {
+        const jwk = await crypto.subtle.exportKey('jwk', key);
+        delete jwk.key_ops;
+        delete jwk.ext;
+        return jwk;
+    }
+    async _importPrivateKeyJwk(jwk) {
+        return await crypto.subtle.importKey(
+            'jwk',
+            { ...jwk, key_ops: ['sign'] },
+            { name: 'ECDSA', namedCurve: 'P-256' },
+            true,
+            ['sign']
+        );
+    }
+    async _signJwtEs256(header, payload, privateKey) {
+        const enc = (obj) => this._base64urlEncode(JSON.stringify(obj));
+        const headerB64 = enc(header);
+        const payloadB64 = enc(payload);
+        const message = new TextEncoder().encode(headerB64 + '.' + payloadB64);
+        const sig = await crypto.subtle.sign(
+            { name: 'ECDSA', hash: 'SHA-256' },
+            privateKey,
+            message
+        );
+        return headerB64 + '.' + payloadB64 + '.' + this._base64urlEncode(new Uint8Array(sig));
+    }
+    async _buildDpopProof(htm, htu, nonce, privateKey, publicKeyJwk, accessTokenHash = null) {
+        if (!publicKeyJwk || !publicKeyJwk.crv) throw new Error('DPoP requires public key JWK');
+        const header = { typ: 'dpop+jwt', alg: 'ES256', jwk: publicKeyJwk };
+        const payload = {
+            jti: crypto.randomUUID(),
+            htm,
+            htu,
+            iat: Math.floor(Date.now() / 1000),
+            ...(nonce ? { nonce } : {}),
+            ...(accessTokenHash ? { ath: accessTokenHash } : {})
+        };
+        return await this._signJwtEs256(header, payload, privateKey);
+    }
+
+    async startBlueskyOAuth(handle) {
+        const clientId = this._oauthClientId();
+        const redirectUri = this._oauthRedirectUri();
+        const resHandle = await fetch(`https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(handle)}`);
+        if (!resHandle.ok) throw new Error('Could not resolve handle');
+        const { did } = await resHandle.json();
+        const resPlc = await fetch(`https://plc.directory/${encodeURIComponent(did)}`);
+        if (!resPlc.ok) throw new Error('Could not resolve DID');
+        const didDoc = await resPlc.json();
+        const pdsUrl = didDoc.service?.[0]?.serviceEndpoint || 'https://bsky.social';
+        const resResource = await fetch(pdsUrl.replace(/\/$/, '') + '/.well-known/oauth-protected-resource');
+        if (!resResource.ok) throw new Error('Could not get PDS metadata');
+        const resourceMeta = await resResource.json();
+        const authServerUrl = resourceMeta.authorization_servers?.[0] || 'https://bsky.social';
+        const resAuth = await fetch(authServerUrl.replace(/\/$/, '') + '/.well-known/oauth-authorization-server');
+        if (!resAuth.ok) throw new Error('Could not get OAuth server metadata');
+        const authMeta = await resAuth.json();
+        const parEndpoint = authMeta.pushed_authorization_request_endpoint;
+        const authEndpoint = authMeta.authorization_endpoint;
+        const tokenEndpoint = authMeta.token_endpoint;
+        const issuer = authMeta.issuer;
+
+        const stateArr = new Uint8Array(28);
+        crypto.getRandomValues(stateArr);
+        const state = Array.from(stateArr, b => ('0' + b.toString(16)).slice(-2)).join('');
+        const verifierArr = new Uint8Array(32);
+        crypto.getRandomValues(verifierArr);
+        const codeVerifier = this._base64urlEncode(verifierArr);
+        const codeChallenge = await this._pkceChallenge(codeVerifier);
+
+        const keypair = await this._generateDpopKeypair();
+        const privateJwk = await this._exportKeyJwk(keypair.privateKey);
+        const publicJwk = await this._exportKeyJwk(keypair.publicKey);
+
+        const parBody = new URLSearchParams({
+            response_type: 'code',
+            code_challenge_method: 'S256',
+            scope: 'atproto transition:generic',
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            code_challenge: codeChallenge,
+            state,
+            login_hint: handle
+        });
+        let parRes = await fetch(parEndpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: parBody.toString()
+        });
+        let dpopNonce = parRes.headers.get('dpop-nonce') || parRes.headers.get('DPoP-Nonce');
+        if (parRes.status === 401) {
+            const errBody = await parRes.json().catch(() => ({}));
+            if (errBody.error === 'use_dpop_nonce') dpopNonce = parRes.headers.get('dpop-nonce') || parRes.headers.get('DPoP-Nonce');
+            if (!dpopNonce) throw new Error('PAR requires DPoP');
+            const privateKey = await this._importPrivateKeyJwk(privateJwk);
+            const dpopProof = await this._buildDpopProof('POST', parEndpoint, dpopNonce, privateKey, publicJwk);
+            parRes = await fetch(parEndpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'DPoP': dpopProof
+                },
+                body: parBody.toString()
+            });
+        }
+        if (!parRes.ok) {
+            const err = await parRes.json().catch(() => ({}));
+            throw new Error(err.error_description || err.error || 'PAR failed');
+        }
+        const parData = await parRes.json();
+        const requestUri = parData.request_uri;
+        if (!requestUri) throw new Error('No request_uri from PAR');
+        dpopNonce = parRes.headers.get('dpop-nonce') || parRes.headers.get('DPoP-Nonce') || dpopNonce;
+
+        sessionStorage.setItem('bluesky-oauth-state', state);
+        sessionStorage.setItem('bluesky-oauth-code-verifier', codeVerifier);
+        sessionStorage.setItem('bluesky-oauth-handle', handle);
+        sessionStorage.setItem('bluesky-oauth-token-endpoint', tokenEndpoint);
+        sessionStorage.setItem('bluesky-oauth-issuer', issuer);
+        sessionStorage.setItem('bluesky-oauth-dpop-nonce', dpopNonce || '');
+        sessionStorage.setItem('bluesky-oauth-dpop-private-jwk', JSON.stringify(privateJwk));
+        sessionStorage.setItem('bluesky-oauth-dpop-public-jwk', JSON.stringify(publicJwk));
+
+        const redirectUrl = authEndpoint + '?client_id=' + encodeURIComponent(clientId) + '&request_uri=' + encodeURIComponent(requestUri);
+        window.location.href = redirectUrl;
+    }
+
     async handleOAuthCallback() {
         const urlParams = new URLSearchParams(window.location.search);
         const code = urlParams.get('code');
         const state = urlParams.get('state');
-        const storedState = localStorage.getItem('bluesky-oauth-state');
-        const handle = localStorage.getItem('bluesky-oauth-handle');
+        const iss = urlParams.get('iss');
+        const storedState = sessionStorage.getItem('bluesky-oauth-state');
+        const codeVerifier = sessionStorage.getItem('bluesky-oauth-code-verifier');
+        const handle = sessionStorage.getItem('bluesky-oauth-handle');
+        const tokenEndpoint = sessionStorage.getItem('bluesky-oauth-token-endpoint');
+        const issuer = sessionStorage.getItem('bluesky-oauth-issuer');
+        const dpopNonce = sessionStorage.getItem('bluesky-oauth-dpop-nonce');
+        const privateJwk = sessionStorage.getItem('bluesky-oauth-dpop-private-jwk');
 
-        // Clean up URL parameters
         if (code || state) {
-            const newUrl = window.location.pathname;
-            window.history.replaceState({}, document.title, newUrl);
+            window.history.replaceState({}, document.title, window.location.pathname || '/');
         }
-
-        if (!code || !state || state !== storedState) {
-            if (code || state) {
-                console.error('OAuth state mismatch or missing parameters');
-            }
+        if (!code || !state || state !== storedState || !codeVerifier || !tokenEndpoint || !privateJwk) {
+            if (code || state) console.error('OAuth callback: missing or invalid state/params');
+            return false;
+        }
+        if (iss && iss !== issuer) {
+            console.error('OAuth callback: issuer mismatch');
             return false;
         }
 
         try {
-            const redirectUri = window.location.origin + window.location.pathname;
-            const clientId = redirectUri;
-            
-            // Exchange authorization code for tokens
-            const response = await fetch('https://bsky.social/xrpc/com.atproto.server.completeOAuth', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    code: code,
-                    redirect_uri: redirectUri,
-                    client_id: clientId
-                })
+            const clientId = this._oauthClientId();
+            const redirectUri = this._oauthRedirectUri();
+            const privateKey = await this._importPrivateKeyJwk(JSON.parse(privateJwk));
+            const publicJwk = JSON.parse(sessionStorage.getItem('bluesky-oauth-dpop-public-jwk') || '{}');
+            localStorage.setItem('bluesky-dpop-public-jwk', JSON.stringify(publicJwk));
+            const dpopProof = await this._buildDpopProof('POST', tokenEndpoint, dpopNonce || undefined, privateKey, publicJwk);
+
+            const tokenBody = new URLSearchParams({
+                grant_type: 'authorization_code',
+                code,
+                redirect_uri: redirectUri,
+                client_id: clientId,
+                code_verifier: codeVerifier
             });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || 'Failed to complete OAuth');
+            const tokenRes = await fetch(tokenEndpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'DPoP': dpopProof
+                },
+                body: tokenBody.toString()
+            });
+            if (!tokenRes.ok) {
+                const err = await tokenRes.json().catch(() => ({}));
+                throw new Error(err.error_description || err.error || 'Token exchange failed');
             }
+            const data = await tokenRes.json();
+            const accessToken = data.access_token;
+            const refreshToken = data.refresh_token;
+            const sub = data.sub;
+            if (!accessToken || !refreshToken || !sub) throw new Error('Invalid token response');
 
-            const data = await response.json();
+            localStorage.setItem('bluesky-oauth-dpop-private-jwk', privateJwk);
             this.blueskyClient = {
-                did: data.did,
-                handle: handle || data.handle,
-                accessJwt: data.accessJwt,
-                refreshJwt: data.refreshJwt,
+                did: sub,
+                handle: handle || sub,
+                accessJwt: accessToken,
+                refreshJwt: refreshToken,
                 tokenTimestamp: Date.now()
             };
-
-            // Store session
             localStorage.setItem('bluesky-session', JSON.stringify({
                 handle: this.blueskyClient.handle,
                 did: this.blueskyClient.did,
-                refreshJwt: this.blueskyClient.refreshJwt
+                refreshJwt: this.blueskyClient.refreshJwt,
+                oauth: true
             }));
-
-            // Clean up OAuth state
-            localStorage.removeItem('bluesky-oauth-state');
-            localStorage.removeItem('bluesky-oauth-handle');
-
+            sessionStorage.removeItem('bluesky-oauth-state');
+            sessionStorage.removeItem('bluesky-oauth-code-verifier');
+            sessionStorage.removeItem('bluesky-oauth-handle');
+            sessionStorage.removeItem('bluesky-oauth-token-endpoint');
+            sessionStorage.removeItem('bluesky-oauth-issuer');
+            sessionStorage.removeItem('bluesky-oauth-dpop-nonce');
+            sessionStorage.removeItem('bluesky-oauth-dpop-private-jwk');
+            sessionStorage.removeItem('bluesky-oauth-dpop-public-jwk');
             this.storageMode = 'bluesky';
+            await this.loadArchiveFromBluesky();
             return true;
         } catch (error) {
             console.error('OAuth callback error:', error);
-            localStorage.removeItem('bluesky-oauth-state');
-            localStorage.removeItem('bluesky-oauth-handle');
+            sessionStorage.removeItem('bluesky-oauth-state');
+            sessionStorage.removeItem('bluesky-oauth-code-verifier');
+            sessionStorage.removeItem('bluesky-oauth-handle');
+            sessionStorage.removeItem('bluesky-oauth-token-endpoint');
+            sessionStorage.removeItem('bluesky-oauth-issuer');
+            sessionStorage.removeItem('bluesky-oauth-dpop-nonce');
+            sessionStorage.removeItem('bluesky-oauth-dpop-private-jwk');
+            sessionStorage.removeItem('bluesky-oauth-dpop-public-jwk');
             return false;
         }
     }
@@ -284,40 +503,28 @@ class WikiStorage {
         }
     }
 
-    // Refresh access token (AT Protocol standard)
+    // Refresh access token (OAuth or legacy Bearer)
     async refreshSession() {
-        if (!this.blueskyClient || !this.blueskyClient.refreshJwt) {
-            throw new Error('No refresh token available');
-        }
-
+        const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
+        if (!session.refreshJwt) throw new Error('No refresh token available');
         try {
-            const response = await fetch('https://bsky.social/xrpc/com.atproto.server.refreshSession', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${this.blueskyClient.refreshJwt}`
-                }
-            });
-
-            if (!response.ok) {
-                throw new Error('Failed to refresh session');
-            }
-
-            const data = await response.json();
-            this.blueskyClient.accessJwt = data.accessJwt;
-            this.blueskyClient.refreshJwt = data.refreshJwt;
-
-            // Update stored session
-            const stored = localStorage.getItem('bluesky-session');
-            if (stored) {
-                const session = JSON.parse(stored);
+            if (session.oauth && localStorage.getItem('bluesky-oauth-dpop-private-jwk')) {
+                await this._oauthRefresh();
+            } else {
+                const response = await fetch('https://bsky.social/xrpc/com.atproto.server.refreshSession', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${session.refreshJwt}` }
+                });
+                if (!response.ok) throw new Error('Failed to refresh session');
+                const data = await response.json();
+                this.blueskyClient.accessJwt = data.accessJwt;
+                this.blueskyClient.refreshJwt = data.refreshJwt;
                 session.refreshJwt = data.refreshJwt;
                 localStorage.setItem('bluesky-session', JSON.stringify(session));
             }
-
             return true;
         } catch (error) {
             console.error('Session refresh error:', error);
-            // If refresh fails, user needs to reconnect
             this.disconnectBluesky();
             throw error;
         }
@@ -345,6 +552,50 @@ class WikiStorage {
         this.blueskyClient = null;
         this.storageMode = 'local';
         localStorage.removeItem('bluesky-session');
+        localStorage.removeItem('bluesky-oauth-dpop-private-jwk');
+        localStorage.removeItem('bluesky-oauth-dpop-public-jwk');
+        localStorage.removeItem('bluesky-dpop-nonce');
+    }
+
+    _isOAuthSession() {
+        const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
+        return !!session.oauth && !!localStorage.getItem('bluesky-oauth-dpop-private-jwk');
+    }
+
+    async _pdsFetch(url, options = {}) {
+        if (!this.blueskyClient?.accessJwt) throw new Error('Not connected');
+        await this.ensureValidToken();
+        if (!this._isOAuthSession()) {
+            const headers = { ...options.headers, 'Authorization': `Bearer ${this.blueskyClient.accessJwt}` };
+            return fetch(url, { ...options, headers });
+        }
+        const privateJwk = localStorage.getItem('bluesky-oauth-dpop-private-jwk');
+        const publicJwk = localStorage.getItem('bluesky-oauth-dpop-public-jwk');
+        if (!privateJwk || !publicJwk) throw new Error('OAuth DPoP key missing');
+        const privateKey = await this._importPrivateKeyJwk(JSON.parse(privateJwk));
+        const publicKeyJwk = JSON.parse(publicJwk);
+        const accessToken = this.blueskyClient.accessJwt;
+        const accessTokenHash = this._base64urlEncode(await this._sha256Bytes(accessToken));
+        let nonce = localStorage.getItem('bluesky-dpop-nonce') || '';
+        const method = (options.method || 'GET').toUpperCase();
+        const htu = url.split('#')[0];
+        let dpopProof = await this._buildDpopProof(method, htu, nonce || undefined, privateKey, publicKeyJwk, accessTokenHash);
+        let headers = {
+            ...options.headers,
+            'Authorization': `DPoP ${accessToken}`,
+            'DPoP': dpopProof
+        };
+        let res = await fetch(url, { ...options, headers });
+        if (res.status === 401) {
+            const newNonce = res.headers.get('dpop-nonce') || res.headers.get('DPoP-Nonce');
+            if (newNonce) {
+                localStorage.setItem('bluesky-dpop-nonce', newNonce);
+                dpopProof = await this._buildDpopProof(method, htu, newNonce, privateKey, publicKeyJwk, accessTokenHash);
+                headers = { ...options.headers, 'Authorization': `DPoP ${accessToken}`, 'DPoP': dpopProof };
+                res = await fetch(url, { ...options, headers });
+            }
+        }
+        return res;
     }
 
     // Get all articles
@@ -364,11 +615,7 @@ class WikiStorage {
     // Get articles from Bluesky PDS
     async getAllArticlesFromBluesky() {
         try {
-            const response = await fetch(`https://bsky.social/xrpc/com.atproto.repo.listRecords?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record`, {
-                headers: {
-                    'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
-                }
-            });
+            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.listRecords?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record`);
 
             if (!response.ok) {
                 return {};
@@ -415,11 +662,7 @@ class WikiStorage {
 
     async getArticleFromBluesky(key) {
         try {
-            const response = await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${key}`, {
-                headers: {
-                    'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
-                }
-            });
+            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${key}`);
 
             if (!response.ok) {
                 return null;
@@ -487,12 +730,9 @@ class WikiStorage {
 
             if (existing) {
                 // Update existing
-                await fetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
+                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         repo: this.blueskyClient.did,
                         collection: 'com.atproto.repo.record',
@@ -502,12 +742,9 @@ class WikiStorage {
                 });
             } else {
                 // Create new
-                await fetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
+                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         repo: this.blueskyClient.did,
                         collection: 'com.atproto.repo.record',
@@ -538,12 +775,9 @@ class WikiStorage {
 
     async deleteArticleFromBluesky(key) {
         try {
-            await fetch(`https://bsky.social/xrpc/com.atproto.repo.deleteRecord`, {
+            await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.deleteRecord`, {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     repo: this.blueskyClient.did,
                     collection: 'com.atproto.repo.record',
@@ -816,19 +1050,12 @@ class WikiStorage {
 
             // Check if record exists
             try {
-                await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=webcomic-pages`, {
-                    headers: {
-                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
-                    }
-                });
+                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=webcomic-pages`);
 
                 // Update existing
-                await fetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
+                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         repo: this.blueskyClient.did,
                         collection: 'com.atproto.repo.record',
@@ -838,12 +1065,9 @@ class WikiStorage {
                 });
             } catch (e) {
                 // Create new
-                await fetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
+                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         repo: this.blueskyClient.did,
                         collection: 'com.atproto.repo.record',
@@ -859,11 +1083,7 @@ class WikiStorage {
     async loadWebcomicPagesFromBluesky() {
         try {
             await this.ensureValidToken();
-            const response = await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=webcomic-pages`, {
-                headers: {
-                    'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
-                }
-            });
+            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=webcomic-pages`);
 
             if (response.ok) {
                 const data = await response.json();
@@ -940,19 +1160,12 @@ class WikiStorage {
             const rkey = `webcomic-progress-${userId}`;
             
             try {
-                await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${rkey}`, {
-                    headers: {
-                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
-                    }
-                });
+                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${rkey}`);
 
                 // Update existing
-                await fetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
+                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         repo: this.blueskyClient.did,
                         collection: 'com.atproto.repo.record',
@@ -962,12 +1175,9 @@ class WikiStorage {
                 });
             } catch (e) {
                 // Create new
-                await fetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
+                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         repo: this.blueskyClient.did,
                         collection: 'com.atproto.repo.record',
@@ -985,11 +1195,7 @@ class WikiStorage {
             await this.ensureValidToken();
             const userId = this.blueskyClient.did;
             const rkey = `webcomic-progress-${userId}`;
-            const response = await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${rkey}`, {
-                headers: {
-                    'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
-                }
-            });
+            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${rkey}`);
 
             if (response.ok) {
                 const data = await response.json();
@@ -1492,9 +1698,8 @@ class WikiStorage {
         await this.ensureValidToken();
         const formData = new FormData();
         formData.append('file', blob, `image.${mimeType.split('/')[1] || 'jpg'}`);
-        const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', {
+        const response = await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${this.blueskyClient.accessJwt}` },
             body: formData
         });
         if (!response.ok) {
@@ -1817,20 +2022,18 @@ class WikiStorage {
                 content: JSON.stringify(payload),
                 createdAt: new Date().toISOString()
             };
-            const getRes = await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`, {
-                headers: { 'Authorization': `Bearer ${this.blueskyClient.accessJwt}` }
-            });
+            const getRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
             const body = { repo: this.blueskyClient.did, collection: 'com.atproto.repo.record', rkey: 'xoxowiki-archive', record };
             if (getRes.ok) {
-                await fetch('https://bsky.social/xrpc/com.atproto.repo.putRecord', {
+                await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.putRecord', {
                     method: 'POST',
-                    headers: { 'Authorization': `Bearer ${this.blueskyClient.accessJwt}`, 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
             } else {
-                await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
+                await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
                     method: 'POST',
-                    headers: { 'Authorization': `Bearer ${this.blueskyClient.accessJwt}`, 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
             }

@@ -28,3 +28,5 @@ After a minute or two, the site will be at:
 **https://YOUR_USERNAME.github.io/YOUR_REPO/**
 
 You can test the wiki there; data is stored in the browser (IndexedDB / local storage) per device.
+
+**Bluesky OAuth:** Connect to Bluesky uses AT Protocol OAuth (like pckt.blog). The file `oauth-client-metadata.json` has `client_id` and `redirect_uris` set for `https://slrgt.github.io/wikisky/`. If you deploy to a different URL, edit that file so `client_id` and `redirect_uris` match your app URL (the metadata file must be served at the `client_id` URL).

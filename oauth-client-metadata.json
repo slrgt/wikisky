@@ -1,0 +1,12 @@
+{
+  "client_id": "https://slrgt.github.io/wikisky/oauth-client-metadata.json",
+  "client_name": "XoxoWiki",
+  "client_uri": "https://slrgt.github.io/wikisky/",
+  "application_type": "web",
+  "grant_types": ["authorization_code", "refresh_token"],
+  "scope": "atproto transition:generic",
+  "response_types": ["code"],
+  "redirect_uris": ["https://slrgt.github.io/wikisky/"],
+  "token_endpoint_auth_method": "none",
+  "dpop_bound_access_tokens": true
+}

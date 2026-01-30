@@ -1917,6 +1917,12 @@ h3:hover .section-actions {
     font-size: 12px;
 }
 
+.form-hint {
+    font-size: 0.9rem;
+    color: var(--mw-secondary-text, #54595d);
+    margin: 0 0 0.75em 0;
+}
+
 .modal-actions {
     display: flex;
     gap: 0.5em;

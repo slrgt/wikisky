@@ -2956,12 +2956,22 @@ class WikiApp {
             return;
         }
 
+        const btn = document.getElementById('connect-bluesky-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Starting…';
+        }
         try {
-            // Start OAuth flow - this will redirect to Bluesky
-            this.storage.startBlueskyOAuth(handle);
-            // User will be redirected, so we don't need to close modal here
+            await this.storage.startBlueskyOAuth(handle);
+            // User will be redirected to Bluesky; if we get here, something failed
+            alert('Failed to start Bluesky login. Ensure this app is opened from its published URL (e.g. GitHub Pages).');
         } catch (error) {
-            alert('Failed to start Bluesky login: ' + error.message);
+            alert('Failed to start Bluesky login: ' + (error.message || 'Unknown error'));
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Continue to Bluesky Login';
+            }
         }
     }
 
