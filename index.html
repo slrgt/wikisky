@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no, maximum-scale=1">
+    <title>XoxoWiki</title>
+    
+    <!-- PWA Meta Tags -->
+    <meta name="application-name" content="XoxoWiki">
+    <meta name="theme-color" content="#0645ad">
+    <meta name="mobile-web-app-capable" content="yes">
+    
+    <!-- iOS PWA Meta Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="XoxoWiki">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%230645ad' width='100' height='100' rx='20'/><text x='50' y='68' font-size='50' text-anchor='middle' fill='white' font-family='system-ui'>W</text></svg>">
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+    
+    <link rel="stylesheet" href="style.css">
+    <!-- Quill WYSIWYG Editor -->
+    <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
+    <!-- JSZip for downloading wiki code -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+    <div class="mw-page-container">
+        <header class="mw-header">
+            <div class="mw-header-top">
+                <nav class="section-nav header-section-nav">
+                    <a href="#main" class="section-nav-btn" data-route="main" data-section="welcome" draggable="true" title="Drag to add Home section to bento"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>Home</a>
+                    <a href="#topics" class="section-nav-btn" data-route="topics" data-section="topics" draggable="true" title="Drag to add Topics section to bento"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 0 1 0 2.828l-7 7a2 2 0 0 1-2.828 0l-7-7A1.994 1.994 0 0 1 3 12V7a4 4 0 0 1 4-4z"/></svg>Topics</a>
+                    <a href="#articles" class="section-nav-btn" data-route="articles" data-section="articles" draggable="true" title="Drag to add Articles section to bento"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg>Articles</a>
+                    <a href="#collection" class="section-nav-btn" data-route="collection" data-section="collections" draggable="true" title="Drag to add Collections section to bento"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>Collections</a>
+                    <a href="#habits" class="section-nav-btn" data-route="habits" data-section="habits" draggable="true" title="Drag to add Habits section to bento"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>Habits</a>
+                </nav>
+                <div class="header-search-create-group">
+                    <div class="mw-search-container">
+                        <div class="search-bar-wrapper">
+                            <input type="text" id="wiki-search" class="wiki-search-input" placeholder="Search articles, collections, habits..." autocomplete="off">
+                            <button id="search-button" class="search-button-icon" type="button" aria-label="Search">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                    <circle cx="11" cy="11" r="8"></circle>
+                                    <path d="m21 21-4.35-4.35"></path>
+                                </svg>
+                            </button>
+                        </div>
+                        <div id="search-results" class="search-results" style="display: none;"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="bookmarks-bar" class="bookmarks-bar" style="display: none;">
+                <a href="#bookmarks" data-route="bookmarks" class="bookmarks-label-link">
+                    <span class="bookmarks-label">Bookmarks:</span>
+                </a>
+                <span id="bookmarks-list" class="bookmarks-list"></span>
+            </div>
+        </header>
+        
+        <!-- Mobile More Button - Outside header for proper positioning -->
+        <button id="mobile-more-btn" class="mobile-more-btn-top">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="1"></circle>
+                <circle cx="12" cy="5" r="1"></circle>
+                <circle cx="12" cy="19" r="1"></circle>
+            </svg>
+        </button>
+
+        <div class="mw-body">
+            <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+            <div class="mw-body-container">
+                <aside class="mw-sidebar">
+                    <div class="mw-sidebar-content">
+                        <div class="sidebar-header">
+                            <a href="#main" data-route="main" class="mw-logo-link">XoxoWiki</a>
+                        </div>
+                        <div id="table-of-contents" class="table-of-contents" style="display: none;">
+                            <h3>Contents</h3>
+                            <button id="scroll-to-top" class="scroll-to-top-btn" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">↑ Scroll to Top</button>
+                            <div id="toc-list" class="toc-list"></div>
+                        </div>
+                        <ul class="mw-sidebar-menu">
+                        </ul>
+                        <div id="sidebar-bookmarks" class="sidebar-bookmarks" style="display: none;">
+                            <a href="#bookmarks" data-route="bookmarks" class="sidebar-bookmarks-button">
+                                <h3>Bookmarks</h3>
+                            </a>
+                            <ul id="sidebar-bookmarks-list" class="sidebar-bookmarks-list"></ul>
+                        </div>
+                        <div id="sidebar-thoughts" class="sidebar-thoughts" style="display: block;">
+                            <h3>Threads</h3>
+                            <ul id="sidebar-thoughts-list" class="sidebar-thoughts-list"></ul>
+                        </div>
+                        <div id="sidebar-recent-articles" class="sidebar-recent-articles">
+                            <h3>Recent Articles</h3>
+                            <ul id="sidebar-recent-articles-list" class="sidebar-recent-articles-list"></ul>
+                        </div>
+                    </div>
+                </aside>
+
+                <main class="mw-content" id="content">
+                    <div id="article-container">
+                        <!-- Content will be loaded here -->
+                    </div>
+                </main>
+                
+                <aside class="mw-sidebar-right">
+                    <div class="mw-sidebar-right-content">
+                        <div class="sidebar-right-header">
+                            <div class="menu-button-wrapper" style="position: relative;">
+                                <button id="menu-button" class="menu-button" aria-label="Menu">
+                                    <span class="menu-icon">
+                                        <span></span>
+                                        <span></span>
+                                        <span></span>
+                                        <span></span>
+                                    </span>
+                                </button>
+                                <!-- Menu Overlay -->
+                                <div id="menu-overlay" class="menu-overlay">
+                                    <div class="menu-grid">
+                                        <a href="#main" data-route="main" class="menu-item">
+                                            <div class="menu-icon-square">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                                                    <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                                                </svg>
+                                            </div>
+                                            <div class="menu-item-text">
+                                                <div class="menu-item-title">Home Page</div>
+                                                <div class="menu-item-desc">View your homepage</div>
+                                            </div>
+                                        </a>
+                                        <a href="#articles" data-route="articles" class="menu-item">
+                                            <div class="menu-icon-square">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                                    <path d="M14 2v6h6"></path>
+                                                    <path d="M16 13H8M16 17H8M10 9H8"></path>
+                                                </svg>
+                                            </div>
+                                            <div class="menu-item-text">
+                                                <div class="menu-item-title">All Articles</div>
+                                                <div class="menu-item-desc">Browse all articles</div>
+                                            </div>
+                                        </a>
+                                        <a href="#bookmarks" data-route="bookmarks" class="menu-item">
+                                            <div class="menu-icon-square">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+                                                </svg>
+                                            </div>
+                                            <div class="menu-item-text">
+                                                <div class="menu-item-title">Bookmarks</div>
+                                                <div class="menu-item-desc">Saved articles</div>
+                                            </div>
+                                        </a>
+                                        <a href="#collection" data-route="collection" class="menu-item">
+                                            <div class="menu-icon-square">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                                                    <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                                                    <path d="M21 15l-5-5L5 21"></path>
+                                                </svg>
+                                            </div>
+                                            <div class="menu-item-text">
+                                                <div class="menu-item-title">Collections</div>
+                                                <div class="menu-item-desc">View your collections</div>
+                                            </div>
+                                        </a>
+                                        <a href="#browse" data-route="browse" class="menu-item">
+                                            <div class="menu-icon-square">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <circle cx="11" cy="11" r="8"></circle>
+                                                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                                </svg>
+                                            </div>
+                                            <div class="menu-item-text">
+                                                <div class="menu-item-title">Browse</div>
+                                                <div class="menu-item-desc">Find images from AT Protocol</div>
+                                            </div>
+                                        </a>
+                                        <a href="#habits" data-route="habits" class="menu-item">
+                                            <div class="menu-icon-square">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                                                    <path d="M22 4L12 14.01l-3-3"></path>
+                                                </svg>
+                                            </div>
+                                            <div class="menu-item-text">
+                                                <div class="menu-item-title">Habits</div>
+                                                <div class="menu-item-desc">Track your habits</div>
+                                            </div>
+                                        </a>
+                                        <a href="/feed.xml" target="_blank" class="menu-item" id="menu-rss-feed">
+                                            <div class="menu-icon-square">
+                                                <svg viewBox="0 0 24 24" fill="#ff6600" stroke="#ff6600" stroke-width="2">
+                                                    <circle cx="6" cy="18" r="3" fill="#ff6600"/>
+                                                    <path d="M4 4.5C9.4 4.5 13.8 8.9 13.8 14.3"></path>
+                                                    <path d="M4 10c5 0 9 4 9 9"></path>
+                                                </svg>
+                                            </div>
+                                            <div class="menu-item-text">
+                                                <div class="menu-item-title">RSS Feed</div>
+                                                <div class="menu-item-desc">Subscribe to updates</div>
+                                            </div>
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="storage-section">
+                            <h3>Sync & Share</h3>
+                            <div class="storage-mode" style="margin-top: 0.5em;">
+                                <span id="storage-mode-indicator">Sync Status: Local Only</span>
+                            </div>
+                            <details style="margin-top: 1em; font-size: 12px;">
+                                <summary style="cursor: pointer; color: #54595d;">Advanced Options</summary>
+                                <div style="margin-top: 0.5em;">
+                                    <button id="connect-bluesky" class="btn-secondary" style="width: 100%; margin-top: 0.5em; font-size: 12px; display: flex; align-items: center; justify-content: center; gap: 0.5em;">
+                                        <svg viewBox="0 0 600 530" style="width: 16px; height: 14px;" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="m135.72 44.03c66.496 49.921 138.02 151.14 164.28 205.46 26.262-54.316 97.782-155.54 164.28-205.46 47.98-36.021 125.72-63.892 125.72 24.795 0 17.712-10.155 148.79-16.111 170.07-20.703 73.984-96.144 92.854-163.25 81.433 117.3 19.964 147.14 86.092 82.697 152.22-122.39 125.59-175.91-31.511-189.63-71.766-2.514-7.3797-3.6904-10.832-3.7077-7.8964-0.0174-2.9357-1.1937 0.51669-3.7077 7.8964-13.714 40.255-67.233 197.36-189.63 71.766-64.444-66.128-34.605-132.26 82.697-152.22-67.108 11.421-142.55-7.4491-163.25-81.433-5.9562-21.282-16.111-152.36-16.111-170.07 0-88.687 77.742-60.816 125.72-24.795z" fill="currentColor"/>
+                                        </svg>
+                                        Login with Bluesky
+                                    </button>
+                                    <button id="disconnect-bluesky" class="btn-secondary" style="width: 100%; margin-top: 0.5em; font-size: 12px; display: none;">Disconnect Bluesky</button>
+                                    <button id="select-archive-directory" class="btn-secondary" style="width: 100%; margin-top: 0.5em; font-size: 12px;">Select Archive Folder</button>
+                                    <div id="archive-directory-status" style="margin-top: 0.5em; font-size: 11px; color: #72777d; display: none;"></div>
+                                    <small style="display: block; margin-top: 0.5em; color: #72777d; font-size: 11px;">Click to configure file storage. You'll be able to choose where files are saved.</small>
+                                    <button id="export-json" class="btn-secondary" style="width: 100%; margin-top: 0.5em; font-size: 12px;">Download Backup</button>
+                                    <button id="import-json" class="btn-secondary" style="width: 100%; margin-top: 0.5em; font-size: 12px;">Import Backup</button>
+                                    <button id="clear-storage" class="btn-danger" style="width: 100%; margin-top: 0.5em; font-size: 12px;">Clear All Browser Storage</button>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                </aside>
+            </div>
+        </div>
+
+        <footer class="mw-footer">
+            <div class="mw-footer-container">
+                <p>Your Personal Wiki - Works offline. Connect to Bluesky to share updates.</p>
+                <button id="download-wiki-code" class="btn-primary" style="margin-top: 1em;">Download XoxoWiki Code</button>
+            </div>
+        </footer>
+
+        <!-- Mobile Bottom Navigation - iOS Tab Bar Style -->
+        <nav id="mobile-bottom-nav" class="mobile-bottom-nav">
+            <a href="#main" data-route="main" class="mobile-nav-item active">
+                <div class="mobile-nav-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                        <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                    </svg>
+                </div>
+                <span class="mobile-nav-label">Home</span>
+            </a>
+            <a href="#topics" data-route="topics" class="mobile-nav-item">
+                <div class="mobile-nav-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 0 1 0 2.828l-7 7a2 2 0 0 1-2.828 0l-7-7A1.994 1.994 0 0 1 3 12V7a4 4 0 0 1 4-4z"></path>
+                    </svg>
+                </div>
+                <span class="mobile-nav-label">Topics</span>
+            </a>
+            <a href="#articles" data-route="articles" class="mobile-nav-item">
+                <div class="mobile-nav-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <path d="M14 2v6h6"></path>
+                        <path d="M16 13H8M16 17H8M10 9H8"></path>
+                    </svg>
+                </div>
+                <span class="mobile-nav-label">Articles</span>
+            </a>
+            <a href="#collection" data-route="collection" class="mobile-nav-item">
+                <div class="mobile-nav-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                        <path d="M21 15l-5-5L5 21"></path>
+                    </svg>
+                </div>
+                <span class="mobile-nav-label">Collections</span>
+            </a>
+            <a href="#browse" data-route="browse" class="mobile-nav-item">
+                <div class="mobile-nav-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                </div>
+                <span class="mobile-nav-label">Browse</span>
+            </a>
+            <a href="#habits" data-route="habits" class="mobile-nav-item">
+                <div class="mobile-nav-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                        <path d="M22 4L12 14.01l-3-3"></path>
+                    </svg>
+                </div>
+                <span class="mobile-nav-label">Habits</span>
+            </a>
+        </nav>
+        
+        <!-- Mobile More Menu -->
+        <div id="mobile-more-menu" class="mobile-more-menu">
+            <div class="mobile-more-menu-backdrop"></div>
+            <div class="mobile-more-menu-content">
+                <div class="mobile-more-menu-header">
+                    <span>More</span>
+                    <button id="mobile-more-close" class="mobile-more-close">&times;</button>
+                </div>
+                
+                <!-- Quick Actions Grid -->
+                <div class="mobile-more-menu-grid">
+                    <a href="#bookmarks" data-route="bookmarks" class="mobile-more-item">
+                        <div class="mobile-more-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+                            </svg>
+                        </div>
+                        <span>Bookmarks</span>
+                    </a>
+                    <button id="mobile-create-btn" class="mobile-more-item">
+                        <div class="mobile-more-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                        </div>
+                        <span>Create</span>
+                    </button>
+                    <button id="mobile-bluesky-btn" class="mobile-more-item">
+                        <div class="mobile-more-icon" style="color: #0085ff;">
+                            <svg viewBox="0 0 600 530" fill="currentColor">
+                                <path d="m135.72 44.03c66.496 49.921 138.02 151.14 164.28 205.46 26.262-54.316 97.782-155.54 164.28-205.46 47.98-36.021 125.72-63.892 125.72 24.795 0 17.712-10.155 148.79-16.111 170.07-20.703 73.984-96.144 92.854-163.25 81.433 117.3 19.964 147.14 86.092 82.697 152.22-122.39 125.59-175.91-31.511-189.63-71.766-2.514-7.3797-3.6904-10.832-3.7077-7.8964-0.0174-2.9357-1.1937 0.51669-3.7077 7.8964-13.714 40.255-67.233 197.36-189.63 71.766-64.444-66.128-34.605-132.26 82.697-152.22-67.108 11.421-142.55-7.4491-163.25-81.433-5.9562-21.282-16.111-152.36-16.111-170.07 0-88.687 77.742-60.816 125.72-24.795z"/>
+                            </svg>
+                        </div>
+                        <span>Sync</span>
+                    </button>
+                    <button id="mobile-export-btn" class="mobile-more-item">
+                        <div class="mobile-more-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="7 10 12 15 17 10"></polyline>
+                                <line x1="12" y1="15" x2="12" y2="3"></line>
+                            </svg>
+                        </div>
+                        <span>Backup</span>
+                    </button>
+                    <button id="mobile-import-btn" class="mobile-more-item">
+                        <div class="mobile-more-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="17 8 12 3 7 8"></polyline>
+                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                            </svg>
+                        </div>
+                        <span>Import</span>
+                    </button>
+                    <a href="/feed.xml" target="_blank" class="mobile-more-item">
+                        <div class="mobile-more-icon" style="color: #ff6600;">
+                            <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2">
+                                <circle cx="6" cy="18" r="3"/>
+                                <path d="M4 4.5C9.4 4.5 13.8 8.9 13.8 14.3" fill="none"></path>
+                                <path d="M4 10c5 0 9 4 9 9" fill="none"></path>
+                            </svg>
+                        </div>
+                        <span>RSS</span>
+                    </a>
+                </div>
+                
+            </div>
+        </div>
+
+        <!-- Bottom Sheet (Mobile Actions) -->
+        <div id="bottom-sheet" class="bottom-sheet">
+            <div class="bottom-sheet-handle"></div>
+            <div class="bottom-sheet-content">
+                <button class="bottom-sheet-item" data-action="new-article">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                    New Article
+                </button>
+                <button class="bottom-sheet-item" data-action="upload-media">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                    Upload Media
+                </button>
+                <button class="bottom-sheet-item" data-action="random-article">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+                    Random Article
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create/Edit Article Modal -->
+    <div id="article-modal" class="article-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div style="display: flex; align-items: center; gap: 1em;">
+                    <h2 id="modal-title" style="margin: 0;">Create</h2>
+                    <div class="create-tabs" id="create-tabs">
+                        <button class="create-tab active" data-tab="article">Article</button>
+                        <button class="create-tab" data-tab="media">Media</button>
+                    </div>
+                </div>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Article Tab -->
+                <div id="create-article-panel" class="create-panel active">
+                    <div class="form-group">
+                        <label for="article-title">Article Title:</label>
+                        <input type="text" id="article-title" placeholder="Enter article title. (This is what people will see as the article name") autofocus>
+                    </div>
+                    <div class="form-group" id="article-key-group" style="display: none;">
+                        <label for="article-key">Article Key (URL):</label>
+                        <input type="text" id="article-key" placeholder="article-key">
+                        <small>Lowercase, use hyphens for spaces</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="article-content">Content:</label>
+                        <div id="article-content-editor" style="height: 300px;"></div>
+                        <textarea id="article-content" style="display: none;"></textarea>
+                    </div>
+                    <div class="modal-actions">
+                        <span id="autosave-status" class="autosave-status"></span>
+                        <button id="save-draft" class="btn-secondary">Save as Draft</button>
+                        <button id="save-article" class="btn-primary">Publish</button>
+                        <button id="cancel-article" class="btn-secondary">Cancel</button>
+                        <button id="delete-article" class="btn-danger" style="display: none;">Delete</button>
+                        <button id="view-history" class="btn-secondary" style="display: none;">History</button>
+                    </div>
+                </div>
+                
+                <!-- Media Tab -->
+                <div id="create-media-panel" class="create-panel">
+                    <div id="media-dropzone" class="archive-dropzone">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:48px;height:48px;color:#a7d7f9;">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                        </svg>
+                        <p>Drag & drop images/videos here<br><small>or click to browse</small></p>
+                        <input type="file" id="media-file-input" accept="image/*,video/*" multiple style="display:none;">
+                    </div>
+                    <div class="form-group" style="margin-top:1em;">
+                        <label for="media-image-url">Add from AT Protocol / URL (no hosting needed):</label>
+                        <div style="display:flex;gap:0.5em;align-items:center;">
+                            <input type="url" id="media-image-url" placeholder="https://bsky.social/... or any image URL" style="flex:1;">
+                            <button type="button" id="add-media-by-url" class="btn-secondary">Add</button>
+                        </div>
+                        <small style="color:#72777d;">Paste a Bluesky image URL or any public image link. Images from Bluesky stay on the AT Protocol.</small>
+                    </div>
+                    <div class="form-group" style="margin-top:1em;">
+                        <label for="media-source">Source URL (credit):</label>
+                        <input type="url" id="media-source" placeholder="https://where-you-found-this.com">
+                    </div>
+                    <div id="media-preview" class="archive-preview"></div>
+                    <div class="modal-actions">
+                        <button id="save-media" type="button" class="btn-primary">Save to Collections</button>
+                        <button id="cancel-media" type="button" class="btn-secondary">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- History Modal -->
+    <div id="history-modal" class="article-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Edit History</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="history-list" class="history-list">
+                    <!-- History entries will be loaded here -->
+                </div>
+            </div>
+        </div>
+    </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Import JSON Modal -->
+    <div id="import-json-modal" class="article-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Import Articles from JSON</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="import-json-dropzone" class="archive-dropzone" style="margin-bottom: 1em;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:48px;height:48px;color:#a7d7f9;">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                    </svg>
+                    <p>Drag & drop JSON file here<br><small>or click to browse</small></p>
+                    <input type="file" id="import-json-file-input" accept=".json,application/json" style="display:none;">
+                </div>
+                <p style="margin-top: 1em; margin-bottom: 0.5em;">Or paste your articles.json content below:</p>
+                <div class="form-group">
+                    <textarea id="import-json-content" rows="15" placeholder='{"article-key": {"title": "Article Title", "content": "Content..."}}'></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button id="import-json-btn" class="btn-primary">Import</button>
+                    <button id="cancel-import-json" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bluesky Connection Modal -->
+    <div id="bluesky-modal" class="article-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Connect to Bluesky</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>Connect to Bluesky PDS to sync your wiki across devices.</p>
+                <p>You'll be redirected to Bluesky to log in securely.</p>
+                <div class="form-group">
+                    <label for="bluesky-handle">Bluesky Handle:</label>
+                    <input type="text" id="bluesky-handle" placeholder="username.bsky.social" autofocus>
+                </div>
+                <div class="modal-actions">
+                    <button id="connect-bluesky-btn" class="btn-primary">Continue to Bluesky Login</button>
+                    <button id="cancel-bluesky" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Webcomic Upload Modal -->
+    <div id="webcomic-upload-modal" class="article-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Upload Webcomic Pages</h2>
+                <button class="modal-close" onclick="window.wikiApp.closeUploadWebcomicModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="webcomic-image-input">Image Files:</label>
+                    <input type="file" id="webcomic-image-input" accept="image/*" multiple>
+                    <small>Select one or more image files (jpg, png, gif, etc.). Files will be added in order.</small>
+                </div>
+                <div class="form-group">
+                    <label for="webcomic-title-input">Page Title (optional):</label>
+                    <input type="text" id="webcomic-title-input" placeholder="Page title">
+                    <small>Applied to all uploaded pages</small>
+                </div>
+                <div class="form-group">
+                    <label for="webcomic-page-number-input">Starting Page Number (optional):</label>
+                    <input type="number" id="webcomic-page-number-input" placeholder="Auto">
+                    <small>Leave blank to auto-number. If specified, pages will be numbered starting from this number.</small>
+                </div>
+                <div class="modal-actions">
+                    <button id="upload-webcomic-btn" class="btn-primary">Upload Pages</button>
+                    <button id="cancel-webcomic-upload" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
+    <script src="storage.js"></script>
+    <script src="app.js"></script>
+    
+    <!-- PWA Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(registration => {
+                        console.log('XoxoWiki PWA: Service Worker registered');
+                    })
+                    .catch(error => {
+                        console.log('XoxoWiki PWA: Service Worker registration failed:', error);
+                    });
+            });
+        }
+    </script>
+</body>
+</html>

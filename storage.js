@@ -1,0 +1,1991 @@
+// Storage abstraction layer - pure JavaScript, uses localStorage and Bluesky PDS
+class WikiStorage {
+    constructor() {
+        this.blueskyClient = null;
+        this.storageMode = 'local';
+        this.articles = {};
+        this.history = [];
+        this.comments = {}; // Store comments by article key: { articleKey: [comments] }
+    }
+
+    async init() {
+        try {
+            this.loadFromLocalStorage();
+        } catch (error) {
+            console.error('LocalStorage load error:', error);
+        }
+        
+        // Try to automatically get directory access to current directory
+        await this.autoRequestArchiveDirectory();
+        
+        // Check for OAuth callback first
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('code') && urlParams.get('state')) {
+            // OAuth callback - handle it
+            await this.handleOAuthCallback();
+            return; // Don't load existing connection if we just completed OAuth
+        }
+        
+        try {
+            await this.loadBlueskyConnection();
+            if (this.storageMode === 'bluesky' && this.blueskyClient) {
+                await this.loadArchiveFromBluesky();
+            }
+        } catch (error) {
+            console.error('Bluesky connection error:', error);
+        }
+    }
+
+    async loadArchiveFromBluesky() {
+        if (!this.blueskyClient?.accessJwt) return;
+        try {
+            await this.ensureValidToken();
+            const res = await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`, {
+                headers: { 'Authorization': `Bearer ${this.blueskyClient.accessJwt}` }
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            const content = data.value?.content;
+            if (typeof content === 'string') {
+                const payload = JSON.parse(content);
+                if (payload.archive && Array.isArray(payload.archive)) {
+                    localStorage.setItem('xoxowiki-archive', JSON.stringify(payload.archive));
+                }
+                if (payload.albums && Array.isArray(payload.albums)) {
+                    localStorage.setItem('xoxowiki-albums', JSON.stringify(payload.albums));
+                }
+            }
+        } catch (e) {
+            console.warn('Load archive from Bluesky failed:', e);
+        }
+    }
+
+    // Load from localStorage
+    loadFromLocalStorage() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-articles');
+            if (stored) {
+                this.articles = JSON.parse(stored);
+            }
+            
+            const storedHistory = localStorage.getItem('xoxowiki-history');
+            if (storedHistory) {
+                this.history = JSON.parse(storedHistory);
+            }
+            
+            const storedComments = localStorage.getItem('xoxowiki-comments');
+            if (storedComments) {
+                this.comments = JSON.parse(storedComments);
+            }
+        } catch (error) {
+            console.error('Error loading from localStorage:', error);
+            this.articles = {};
+            this.history = [];
+            this.comments = {};
+        }
+    }
+
+    // Save to localStorage
+    saveToLocalStorage() {
+        try {
+            localStorage.setItem('xoxowiki-articles', JSON.stringify(this.articles));
+            localStorage.setItem('xoxowiki-history', JSON.stringify(this.history));
+            localStorage.setItem('xoxowiki-comments', JSON.stringify(this.comments));
+        } catch (error) {
+            console.error('Error saving to localStorage:', error);
+        }
+    }
+
+    // Load saved Bluesky connection (using refresh token)
+    async loadBlueskyConnection() {
+        try {
+            const saved = localStorage.getItem('bluesky-session');
+            if (saved) {
+                const session = JSON.parse(saved);
+                // Try to refresh the session using stored refresh token
+                if (session.refreshJwt) {
+                    try {
+                        const response = await fetch('https://bsky.social/xrpc/com.atproto.server.refreshSession', {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${session.refreshJwt}`
+                            }
+                        });
+
+                        if (response.ok) {
+                            const data = await response.json();
+                            this.blueskyClient = {
+                                did: session.did,
+                                handle: session.handle,
+                                accessJwt: data.accessJwt,
+                                refreshJwt: data.refreshJwt,
+                                tokenTimestamp: Date.now()
+                            };
+                            this.storageMode = 'bluesky';
+                            
+                            // Update stored session
+                            session.refreshJwt = data.refreshJwt;
+                            localStorage.setItem('bluesky-session', JSON.stringify(session));
+                        }
+                    } catch (error) {
+                        console.error('Error refreshing session:', error);
+                        // Clear invalid session
+                        localStorage.removeItem('bluesky-session');
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error loading Bluesky connection:', error);
+        }
+    }
+
+    // Start OAuth flow - redirect to Bluesky (using AT Protocol OAuth)
+    startBlueskyOAuth(handle) {
+        // Generate a random state for security
+        const state = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+        localStorage.setItem('bluesky-oauth-state', state);
+        localStorage.setItem('bluesky-oauth-handle', handle);
+
+        // Get current origin for redirect
+        const redirectUri = window.location.origin + window.location.pathname;
+        
+        // Use the current page URL as client_id (AT Protocol allows this)
+        const clientId = redirectUri;
+        
+        // Build OAuth URL - redirect to Bluesky's authorization page
+        const oauthUrl = `https://bsky.social/xrpc/com.atproto.server.requestOAuth?` +
+            `client_id=${encodeURIComponent(clientId)}&` +
+            `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+            `response_type=code&` +
+            `state=${state}&` +
+            `scope=atproto`;
+
+        // Redirect to Bluesky OAuth page
+        window.location.href = oauthUrl;
+    }
+
+    // Handle OAuth callback
+    async handleOAuthCallback() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
+        const state = urlParams.get('state');
+        const storedState = localStorage.getItem('bluesky-oauth-state');
+        const handle = localStorage.getItem('bluesky-oauth-handle');
+
+        // Clean up URL parameters
+        if (code || state) {
+            const newUrl = window.location.pathname;
+            window.history.replaceState({}, document.title, newUrl);
+        }
+
+        if (!code || !state || state !== storedState) {
+            if (code || state) {
+                console.error('OAuth state mismatch or missing parameters');
+            }
+            return false;
+        }
+
+        try {
+            const redirectUri = window.location.origin + window.location.pathname;
+            const clientId = redirectUri;
+            
+            // Exchange authorization code for tokens
+            const response = await fetch('https://bsky.social/xrpc/com.atproto.server.completeOAuth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    code: code,
+                    redirect_uri: redirectUri,
+                    client_id: clientId
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.message || 'Failed to complete OAuth');
+            }
+
+            const data = await response.json();
+            this.blueskyClient = {
+                did: data.did,
+                handle: handle || data.handle,
+                accessJwt: data.accessJwt,
+                refreshJwt: data.refreshJwt,
+                tokenTimestamp: Date.now()
+            };
+
+            // Store session
+            localStorage.setItem('bluesky-session', JSON.stringify({
+                handle: this.blueskyClient.handle,
+                did: this.blueskyClient.did,
+                refreshJwt: this.blueskyClient.refreshJwt
+            }));
+
+            // Clean up OAuth state
+            localStorage.removeItem('bluesky-oauth-state');
+            localStorage.removeItem('bluesky-oauth-handle');
+
+            this.storageMode = 'bluesky';
+            return true;
+        } catch (error) {
+            console.error('OAuth callback error:', error);
+            localStorage.removeItem('bluesky-oauth-state');
+            localStorage.removeItem('bluesky-oauth-handle');
+            return false;
+        }
+    }
+
+    // Legacy method for app password (kept for fallback)
+    async connectBluesky(handle, password, saveCredentials = true) {
+        try {
+            // Use AT Protocol's createSession endpoint (same as pckt.blog)
+            const response = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    identifier: handle,
+                    password: password // App password recommended
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                if (response.status === 401) {
+                    throw new Error('Invalid handle or app password. Please check your credentials.');
+                }
+                throw new Error(errorData.message || 'Failed to connect to Bluesky');
+            }
+
+            const data = await response.json();
+            this.blueskyClient = {
+                did: data.did,
+                handle: data.handle,
+                accessJwt: data.accessJwt,
+                refreshJwt: data.refreshJwt,
+                email: data.email || null
+            };
+
+            if (saveCredentials) {
+                // Store only handle, not password (for security)
+                localStorage.setItem('bluesky-session', JSON.stringify({
+                    handle: handle,
+                    did: data.did,
+                    refreshJwt: data.refreshJwt
+                }));
+            }
+
+            this.storageMode = 'bluesky';
+            return true;
+        } catch (error) {
+            console.error('Bluesky connection error:', error);
+            throw error;
+        }
+    }
+
+    // Refresh access token (AT Protocol standard)
+    async refreshSession() {
+        if (!this.blueskyClient || !this.blueskyClient.refreshJwt) {
+            throw new Error('No refresh token available');
+        }
+
+        try {
+            const response = await fetch('https://bsky.social/xrpc/com.atproto.server.refreshSession', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.blueskyClient.refreshJwt}`
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to refresh session');
+            }
+
+            const data = await response.json();
+            this.blueskyClient.accessJwt = data.accessJwt;
+            this.blueskyClient.refreshJwt = data.refreshJwt;
+
+            // Update stored session
+            const stored = localStorage.getItem('bluesky-session');
+            if (stored) {
+                const session = JSON.parse(stored);
+                session.refreshJwt = data.refreshJwt;
+                localStorage.setItem('bluesky-session', JSON.stringify(session));
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Session refresh error:', error);
+            // If refresh fails, user needs to reconnect
+            this.disconnectBluesky();
+            throw error;
+        }
+    }
+
+    // Ensure we have a valid access token
+    async ensureValidToken() {
+        if (!this.blueskyClient) return false;
+        
+        // Try to refresh if token might be expired (simple check - refresh if older than 1 hour)
+        const tokenAge = Date.now() - (this.blueskyClient.tokenTimestamp || 0);
+        if (tokenAge > 3600000) { // 1 hour
+            try {
+                await this.refreshSession();
+            } catch (error) {
+                console.error('Token refresh failed:', error);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Disconnect from Bluesky
+    disconnectBluesky() {
+        this.blueskyClient = null;
+        this.storageMode = 'local';
+        localStorage.removeItem('bluesky-session');
+    }
+
+    // Get all articles
+    async getAllArticles() {
+        if (this.storageMode === 'bluesky' && this.blueskyClient) {
+            return await this.getAllArticlesFromBluesky();
+        } else {
+            return await this.getAllArticlesFromLocal();
+        }
+    }
+
+    // Get articles from localStorage
+    async getAllArticlesFromLocal() {
+        return { ...this.articles };
+    }
+
+    // Get articles from Bluesky PDS
+    async getAllArticlesFromBluesky() {
+        try {
+            const response = await fetch(`https://bsky.social/xrpc/com.atproto.repo.listRecords?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record`, {
+                headers: {
+                    'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
+                }
+            });
+
+            if (!response.ok) {
+                return {};
+            }
+
+            const data = await response.json();
+            const articles = {};
+            if (data.records) {
+                data.records.forEach(record => {
+                    if (record.value && record.value.key) {
+                        articles[record.value.key] = {
+                            title: record.value.title || '',
+                            content: record.value.content || ''
+                        };
+                    }
+                });
+            }
+            return articles;
+        } catch (error) {
+            console.error('Error fetching from Bluesky:', error);
+            return await this.getAllArticlesFromLocal();
+        }
+    }
+
+    // Get single article
+    async getArticle(key) {
+        if (this.storageMode === 'bluesky' && this.blueskyClient) {
+            return await this.getArticleFromBluesky(key);
+        } else {
+            return await this.getArticleFromLocal(key);
+        }
+    }
+
+    async getArticleFromLocal(key) {
+        const article = this.articles[key];
+        if (article) {
+            return {
+                title: article.title,
+                content: article.content
+            };
+        }
+        return null;
+    }
+
+    async getArticleFromBluesky(key) {
+        try {
+            const response = await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${key}`, {
+                headers: {
+                    'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
+                }
+            });
+
+            if (!response.ok) {
+                return null;
+            }
+
+            const data = await response.json();
+            return {
+                title: data.value.title || '',
+                content: data.value.content || ''
+            };
+        } catch (error) {
+            console.error('Error fetching article from Bluesky:', error);
+            return null;
+        }
+    }
+
+    // Save article
+    async saveArticle(key, title, content) {
+        // Always save locally first for offline access
+        await this.saveArticleToLocal(key, title, content);
+
+        // Then sync to Bluesky if connected
+        if (this.storageMode === 'bluesky' && this.blueskyClient) {
+            await this.saveArticleToBluesky(key, title, content);
+        }
+    }
+
+    async saveArticleToLocal(key, title, content) {
+        // Save history if article exists
+        const existing = this.articles[key];
+        if (existing) {
+            this.history.push({
+                articleKey: key,
+                title: existing.title,
+                content: existing.content,
+                timestamp: existing.updatedAt || Date.now(),
+                editedAt: Date.now()
+            });
+        }
+        
+        // Save article
+        this.articles[key] = {
+            title: title,
+            content: content,
+            updatedAt: Date.now()
+        };
+        
+        // Persist to localStorage
+        this.saveToLocalStorage();
+    }
+
+    async saveArticleToBluesky(key, title, content) {
+        try {
+            // Use standard AT Protocol schema (like pckt.blog uses standard.site)
+            const recordData = {
+                $type: 'com.atproto.repo.record',
+                key: key,
+                title: title,
+                content: content,
+                createdAt: new Date().toISOString()
+            };
+
+            // Check if record exists
+            const existing = await this.getArticleFromBluesky(key);
+
+            if (existing) {
+                // Update existing
+                await fetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        repo: this.blueskyClient.did,
+                        collection: 'com.atproto.repo.record',
+                        rkey: key,
+                        record: recordData
+                    })
+                });
+            } else {
+                // Create new
+                await fetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        repo: this.blueskyClient.did,
+                        collection: 'com.atproto.repo.record',
+                        record: recordData
+                    })
+                });
+            }
+        } catch (error) {
+            console.error('Error saving to Bluesky:', error);
+        }
+    }
+
+    // Delete article
+    async deleteArticle(key) {
+        await this.deleteArticleFromLocal(key);
+        
+        if (this.storageMode === 'bluesky' && this.blueskyClient) {
+            await this.deleteArticleFromBluesky(key);
+        }
+    }
+
+    async deleteArticleFromLocal(key) {
+        delete this.articles[key];
+        // Remove history entries for this article
+        this.history = this.history.filter(h => h.articleKey !== key);
+        this.saveToLocalStorage();
+    }
+
+    async deleteArticleFromBluesky(key) {
+        try {
+            await fetch(`https://bsky.social/xrpc/com.atproto.repo.deleteRecord`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    repo: this.blueskyClient.did,
+                    collection: 'com.atproto.repo.record',
+                    rkey: key
+                })
+            });
+        } catch (error) {
+            console.error('Error deleting from Bluesky:', error);
+        }
+    }
+
+    // Export all articles as JSON
+    async exportArticles() {
+        const articles = await this.getAllArticles();
+        return JSON.stringify(articles, null, 2);
+    }
+
+    // Import articles from JSON
+    async importArticles(jsonString) {
+        const articles = JSON.parse(jsonString);
+        for (const [key, article] of Object.entries(articles)) {
+            await this.saveArticle(key, article.title, article.content);
+        }
+    }
+
+    // Get edit history for an article
+    async getArticleHistory(articleKey) {
+        return this.history
+            .filter(h => h.articleKey === articleKey)
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .map(entry => ({
+                title: entry.title,
+                content: entry.content,
+                timestamp: entry.timestamp,
+                editedAt: entry.editedAt
+            }));
+    }
+
+    // Restore article from history
+    async restoreFromHistory(articleKey, historyTimestamp) {
+        const entry = this.history.find(h => h.articleKey === articleKey && h.timestamp === historyTimestamp);
+        if (entry) {
+            await this.saveArticle(articleKey, entry.title, entry.content);
+            return true;
+        }
+        return false;
+    }
+
+    // Comments system
+    addComment(articleKey, commentText, author = 'Anonymous', parentId = null) {
+        if (!this.comments[articleKey]) {
+            this.comments[articleKey] = [];
+        }
+        
+        const comment = {
+            id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+            articleKey: articleKey,
+            text: commentText,
+            author: author,
+            timestamp: Date.now(),
+            parentId: parentId, // null for top-level comments, comment ID for replies
+            replies: []
+        };
+        
+        if (parentId) {
+            // Find parent comment and add as reply
+            const parent = this.findCommentById(articleKey, parentId);
+            if (parent) {
+                if (!parent.replies) {
+                    parent.replies = [];
+                }
+                parent.replies.push(comment);
+            } else {
+                // If parent not found, add as top-level comment
+                this.comments[articleKey].push(comment);
+            }
+        } else {
+            // Top-level comment
+            this.comments[articleKey].push(comment);
+        }
+        
+        this.saveToLocalStorage();
+        return comment;
+    }
+
+    findCommentById(articleKey, commentId) {
+        if (!this.comments[articleKey]) return null;
+        
+        const findInComments = (comments) => {
+            for (const comment of comments) {
+                if (comment.id === commentId) return comment;
+                if (comment.replies && comment.replies.length > 0) {
+                    const found = findInComments(comment.replies);
+                    if (found) return found;
+                }
+            }
+            return null;
+        };
+        
+        return findInComments(this.comments[articleKey]);
+    }
+
+    getComments(articleKey) {
+        return this.comments[articleKey] || [];
+    }
+
+    // Get all articles with comments, sorted by most recent comment timestamp
+    getArticlesWithComments(articles) {
+        const articlesWithComments = [];
+        
+        for (const [key, article] of Object.entries(articles)) {
+            const comments = this.getComments(key);
+            if (comments.length > 0) {
+                // Find the most recent comment timestamp (including replies)
+                let mostRecentTimestamp = 0;
+                
+                const findMostRecent = (commentList) => {
+                    for (const comment of commentList) {
+                        if (comment.timestamp > mostRecentTimestamp) {
+                            mostRecentTimestamp = comment.timestamp;
+                        }
+                        if (comment.replies && comment.replies.length > 0) {
+                            findMostRecent(comment.replies);
+                        }
+                    }
+                };
+                
+                findMostRecent(comments);
+                
+                articlesWithComments.push({
+                    key: key,
+                    title: article.title,
+                    mostRecentCommentTime: mostRecentTimestamp,
+                    commentCount: comments.length
+                });
+            }
+        }
+        
+        // Sort by most recent comment (newest first)
+        articlesWithComments.sort((a, b) => b.mostRecentCommentTime - a.mostRecentCommentTime);
+        
+        return articlesWithComments;
+    }
+
+    deleteComment(articleKey, commentId) {
+        if (!this.comments[articleKey]) return false;
+        
+        const removeFromComments = (comments) => {
+            for (let i = 0; i < comments.length; i++) {
+                if (comments[i].id === commentId) {
+                    comments.splice(i, 1);
+                    return true;
+                }
+                if (comments[i].replies && comments[i].replies.length > 0) {
+                    if (removeFromComments(comments[i].replies)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+        
+        const removed = removeFromComments(this.comments[articleKey]);
+        if (removed) {
+            this.saveToLocalStorage();
+        }
+        return removed;
+    }
+
+    // Bookmark management
+    getBookmarks() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-bookmarks');
+            return stored ? JSON.parse(stored) : [];
+        } catch (error) {
+            console.error('Error loading bookmarks:', error);
+            return [];
+        }
+    }
+
+    saveBookmarks(bookmarks) {
+        try {
+            localStorage.setItem('xoxowiki-bookmarks', JSON.stringify(bookmarks));
+        } catch (error) {
+            console.error('Error saving bookmarks:', error);
+        }
+    }
+
+    addBookmark(articleKey) {
+        const bookmarks = this.getBookmarks();
+        if (!bookmarks.includes(articleKey)) {
+            bookmarks.push(articleKey);
+            this.saveBookmarks(bookmarks);
+        }
+    }
+
+    removeBookmark(articleKey) {
+        const bookmarks = this.getBookmarks();
+        const filtered = bookmarks.filter(key => key !== articleKey);
+        this.saveBookmarks(filtered);
+    }
+
+    isBookmarked(articleKey) {
+        const bookmarks = this.getBookmarks();
+        return bookmarks.includes(articleKey);
+    }
+
+    // Read tracking for bookmarks
+    getReadArticles() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-read-articles');
+            return stored ? JSON.parse(stored) : {};
+        } catch (error) {
+            console.error('Error loading read articles:', error);
+            return {};
+        }
+    }
+
+    markAsRead(articleKey) {
+        const readArticles = this.getReadArticles();
+        readArticles[articleKey] = Date.now();
+        try {
+            localStorage.setItem('xoxowiki-read-articles', JSON.stringify(readArticles));
+        } catch (error) {
+            console.error('Error saving read articles:', error);
+        }
+    }
+
+    isRead(articleKey) {
+        const readArticles = this.getReadArticles();
+        return readArticles.hasOwnProperty(articleKey);
+    }
+
+    getLastReadTime(articleKey) {
+        const readArticles = this.getReadArticles();
+        return readArticles[articleKey] || 0;
+    }
+
+    // Webcomic storage methods
+    getWebcomicPages() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-webcomic-pages');
+            return stored ? JSON.parse(stored) : [];
+        } catch (error) {
+            console.error('Error loading webcomic pages:', error);
+            return [];
+        }
+    }
+
+    saveWebcomicPages(pages) {
+        try {
+            localStorage.setItem('xoxowiki-webcomic-pages', JSON.stringify(pages));
+            // Also sync to Bluesky if connected
+            if (this.storageMode === 'bluesky' && this.blueskyClient) {
+                this.saveWebcomicPagesToBluesky(pages);
+            }
+        } catch (error) {
+            console.error('Error saving webcomic pages:', error);
+        }
+    }
+
+    async saveWebcomicPagesToBluesky(pages) {
+        try {
+            await this.ensureValidToken();
+            const recordData = {
+                $type: 'com.atproto.repo.record',
+                pages: pages,
+                updatedAt: new Date().toISOString()
+            };
+
+            // Check if record exists
+            try {
+                await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=webcomic-pages`, {
+                    headers: {
+                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
+                    }
+                });
+
+                // Update existing
+                await fetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        repo: this.blueskyClient.did,
+                        collection: 'com.atproto.repo.record',
+                        rkey: 'webcomic-pages',
+                        record: recordData
+                    })
+                });
+            } catch (e) {
+                // Create new
+                await fetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        repo: this.blueskyClient.did,
+                        collection: 'com.atproto.repo.record',
+                        record: recordData
+                    })
+                });
+            }
+        } catch (error) {
+            console.error('Error saving webcomic pages to Bluesky:', error);
+        }
+    }
+
+    async loadWebcomicPagesFromBluesky() {
+        try {
+            await this.ensureValidToken();
+            const response = await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=webcomic-pages`, {
+                headers: {
+                    'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
+                }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                if (data.value && data.value.pages) {
+                    return data.value.pages;
+                }
+            }
+        } catch (error) {
+            console.error('Error loading webcomic pages from Bluesky:', error);
+        }
+        return null;
+    }
+
+    addWebcomicPage(imageData, title = '', pageNumber = null) {
+        const pages = this.getWebcomicPages();
+        const newPage = {
+            id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+            imageData: imageData, // Base64 encoded image
+            title: title,
+            pageNumber: pageNumber !== null ? pageNumber : pages.length + 1,
+            createdAt: Date.now()
+        };
+        pages.push(newPage);
+        // Sort by page number
+        pages.sort((a, b) => a.pageNumber - b.pageNumber);
+        this.saveWebcomicPages(pages);
+        return newPage;
+    }
+
+    deleteWebcomicPage(pageId) {
+        const pages = this.getWebcomicPages();
+        const filtered = pages.filter(p => p.id !== pageId);
+        // Renumber pages
+        filtered.forEach((page, index) => {
+            page.pageNumber = index + 1;
+        });
+        this.saveWebcomicPages(filtered);
+    }
+
+    // Read progress tracking (per user via Bluesky DID)
+    getWebcomicReadProgress() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-webcomic-progress');
+            return stored ? JSON.parse(stored) : {};
+        } catch (error) {
+            console.error('Error loading webcomic progress:', error);
+            return {};
+        }
+    }
+
+    saveWebcomicReadProgress(progress) {
+        try {
+            localStorage.setItem('xoxowiki-webcomic-progress', JSON.stringify(progress));
+            // Also sync to Bluesky if connected
+            if (this.storageMode === 'bluesky' && this.blueskyClient) {
+                this.saveWebcomicProgressToBluesky(progress);
+            }
+        } catch (error) {
+            console.error('Error saving webcomic progress:', error);
+        }
+    }
+
+    async saveWebcomicProgressToBluesky(progress) {
+        try {
+            await this.ensureValidToken();
+            const userId = this.blueskyClient.did;
+            const recordData = {
+                $type: 'com.atproto.repo.record',
+                userId: userId,
+                progress: progress,
+                updatedAt: new Date().toISOString()
+            };
+
+            const rkey = `webcomic-progress-${userId}`;
+            
+            try {
+                await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${rkey}`, {
+                    headers: {
+                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
+                    }
+                });
+
+                // Update existing
+                await fetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        repo: this.blueskyClient.did,
+                        collection: 'com.atproto.repo.record',
+                        rkey: rkey,
+                        record: recordData
+                    })
+                });
+            } catch (e) {
+                // Create new
+                await fetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.blueskyClient.accessJwt}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        repo: this.blueskyClient.did,
+                        collection: 'com.atproto.repo.record',
+                        record: recordData
+                    })
+                });
+            }
+        } catch (error) {
+            console.error('Error saving webcomic progress to Bluesky:', error);
+        }
+    }
+
+    async loadWebcomicProgressFromBluesky() {
+        try {
+            await this.ensureValidToken();
+            const userId = this.blueskyClient.did;
+            const rkey = `webcomic-progress-${userId}`;
+            const response = await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${rkey}`, {
+                headers: {
+                    'Authorization': `Bearer ${this.blueskyClient.accessJwt}`
+                }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                if (data.value && data.value.progress) {
+                    return data.value.progress;
+                }
+            }
+        } catch (error) {
+            console.error('Error loading webcomic progress from Bluesky:', error);
+        }
+        return null;
+    }
+
+    markWebcomicPageAsRead(pageId) {
+        const progress = this.getWebcomicReadProgress();
+        const userId = this.storageMode === 'bluesky' && this.blueskyClient ? this.blueskyClient.did : 'local';
+        
+        if (!progress[userId]) {
+            progress[userId] = [];
+        }
+        
+        if (!progress[userId].includes(pageId)) {
+            progress[userId].push(pageId);
+            this.saveWebcomicReadProgress(progress);
+        }
+    }
+
+    getReadWebcomicPages() {
+        const progress = this.getWebcomicReadProgress();
+        const userId = this.storageMode === 'bluesky' && this.blueskyClient ? this.blueskyClient.did : 'local';
+        return progress[userId] || [];
+    }
+
+    isWebcomicPageRead(pageId) {
+        const readPages = this.getReadWebcomicPages();
+        return readPages.includes(pageId);
+    }
+
+    // ===== HABIT TRACKER =====
+    getHabits() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-habits');
+            return stored ? JSON.parse(stored) : ['Workout', 'Game Dev', 'Blender', 'Drawing'];
+        } catch { return ['Workout', 'Game Dev', 'Blender', 'Drawing']; }
+    }
+
+    saveHabits(habits) {
+        localStorage.setItem('xoxowiki-habits', JSON.stringify(habits));
+    }
+
+    getHabitLog() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-habit-log');
+            return stored ? JSON.parse(stored) : {};
+        } catch { return {}; }
+    }
+
+    saveHabitLog(log) {
+        localStorage.setItem('xoxowiki-habit-log', JSON.stringify(log));
+    }
+
+    toggleHabit(date, habit) {
+        const log = this.getHabitLog();
+        if (!log[date]) log[date] = [];
+        const idx = log[date].indexOf(habit);
+        if (idx === -1) log[date].push(habit);
+        else log[date].splice(idx, 1);
+        this.saveHabitLog(log);
+        return log;
+    }
+
+    getStreak(habit) {
+        const log = this.getHabitLog();
+        let streak = 0;
+        const today = new Date();
+        for (let i = 0; i < 365; i++) {
+            const d = new Date(today);
+            d.setDate(d.getDate() - i);
+            const key = d.toISOString().split('T')[0];
+            if (log[key]?.includes(habit)) streak++;
+            else if (i > 0) break;
+        }
+        return streak;
+    }
+
+    // ===== DRAFTS =====
+    getDraft(key) {
+        try {
+            const stored = localStorage.getItem('xoxowiki-drafts');
+            const drafts = stored ? JSON.parse(stored) : {};
+            return drafts[key] || null;
+        } catch { return null; }
+    }
+
+    saveDraft(key, data) {
+        try {
+            const stored = localStorage.getItem('xoxowiki-drafts');
+            const drafts = stored ? JSON.parse(stored) : {};
+            drafts[key || '_new'] = { ...data, savedAt: new Date().toISOString() };
+            localStorage.setItem('xoxowiki-drafts', JSON.stringify(drafts));
+        } catch (e) { console.error('Error saving draft:', e); }
+    }
+
+    deleteDraft(key) {
+        try {
+            const stored = localStorage.getItem('xoxowiki-drafts');
+            const drafts = stored ? JSON.parse(stored) : {};
+            delete drafts[key || '_new'];
+            localStorage.setItem('xoxowiki-drafts', JSON.stringify(drafts));
+        } catch (e) { console.error('Error deleting draft:', e); }
+    }
+
+    getAllDrafts() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-drafts');
+            return stored ? JSON.parse(stored) : {};
+        } catch { return {}; }
+    }
+
+    // ===== FILE SYSTEM ACCESS =====
+    archiveDirectoryHandle = null;
+
+    async autoRequestArchiveDirectory() {
+        // Try to automatically get directory access without user interaction
+        // This will only work if we have a previously granted permission
+        // For new access, user interaction is required
+        if (!('showDirectoryPicker' in window)) {
+            return false;
+        }
+        
+        // Check if we have a stored directory preference
+        const storedDirName = localStorage.getItem('xoxowiki-archive-dir-name');
+        if (!storedDirName) {
+            return false; // No previous selection
+        }
+        
+        // Try to get the directory handle (this requires user interaction on first use)
+        // We can't automatically get it, but we can prepare for it
+        return false;
+    }
+
+    async requestArchiveDirectory() {
+        // Check if File System Access API is available (Chrome/Edge)
+        if ('showDirectoryPicker' in window) {
+            try {
+                // Try to get the directory containing the current HTML file
+                let startIn = 'documents';
+                
+                // If running from file:// protocol, try to suggest current directory
+                if (window.location.protocol === 'file:') {
+                    startIn = 'documents';
+                }
+                
+                this.archiveDirectoryHandle = await window.showDirectoryPicker({
+                    mode: 'readwrite',
+                    startIn: startIn
+                });
+                
+                // Store the directory name for reference (can't store the handle itself)
+                try {
+                    const dirName = this.archiveDirectoryHandle.name;
+                    localStorage.setItem('xoxowiki-archive-dir-name', dirName);
+                } catch (e) {
+                    // Directory handle might not have name property in all browsers
+                }
+                
+                return true;
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    return false; // User cancelled
+                }
+                throw error;
+            }
+        } else {
+            // For browsers without File System Access API (Firefox/Safari)
+            // We'll use a file input with directory selection simulation
+            return await this.requestArchiveDirectoryFallback();
+        }
+    }
+    
+    async requestArchiveDirectoryFallback() {
+        // For browsers without File System Access API, we can't actually select a folder for writing
+        // But we can use showSaveFilePicker for each file to let user choose location
+        // Just mark that we're using per-file selection mode
+        localStorage.setItem('xoxowiki-uses-per-file-picker', 'true');
+        localStorage.setItem('xoxowiki-archive-dir-name', 'Per-file selection');
+        this.archiveDirectoryHandle = null;
+        return true;
+    }
+    
+    async requestCurrentDirectory() {
+        // Try to get access to the directory containing the HTML file
+        // This is a best-effort attempt - browsers require user permission
+        if (!('showDirectoryPicker' in window)) {
+            // Browser doesn't support File System Access API
+            // Will use IndexedDB + download fallback
+            return false;
+        }
+        
+        try {
+            // For file:// URLs, we can't directly access the parent directory
+            // But we can try to use a file picker that suggests the current location
+            // The browser will handle suggesting the appropriate directory
+            
+            // Check if we're running from a file:// URL
+            if (window.location.protocol === 'file:') {
+                // Try to get a file handle first, then get its directory
+                // This is a workaround to get directory access
+                try {
+                    // Request a file picker, then get its directory
+                    // Actually, we can't do this - we need directory picker
+                    // So we'll just use the directory picker with a helpful message
+                    const handle = await window.showDirectoryPicker({
+                        mode: 'readwrite',
+                        // Browser will suggest appropriate location
+                    });
+                    
+                    this.archiveDirectoryHandle = handle;
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            } else {
+                // For http/https, we can't access local file system automatically
+                return false;
+            }
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                return false;
+            }
+            return false;
+        }
+    }
+
+    async saveFileToDisk(filename, data, isBase64 = false) {
+        // Check if File System Access API is available (Chrome/Edge)
+        if ('showDirectoryPicker' in window) {
+            return await this.saveFileWithFileSystemAPI(filename, data, isBase64);
+        } else {
+            // Fallback for other browsers: use download API
+            return await this.saveFileWithDownloadAPI(filename, data, isBase64);
+        }
+    }
+
+    async saveFileWithFileSystemAPI(filename, data, isBase64 = false) {
+        if (!this.archiveDirectoryHandle) {
+            // Try to automatically get directory access
+            // First, try to get the current directory if we're in a file:// context
+            let granted = false;
+            
+            if (window.location.protocol === 'file:') {
+                // For file:// URLs, try to request the current directory
+                // This will prompt the user but only once
+                granted = await this.requestCurrentDirectory();
+            }
+            
+            // If that didn't work, use the standard directory picker
+            if (!granted) {
+                granted = await this.requestArchiveDirectory();
+            }
+            
+            if (!granted) {
+                throw new Error('Directory access not granted. Please select an archive folder.');
+            }
+        }
+
+        try {
+            // Create archive subdirectory if it doesn't exist
+            let archiveDirHandle;
+            try {
+                archiveDirHandle = await this.archiveDirectoryHandle.getDirectoryHandle('archive', { create: true });
+            } catch (error) {
+                throw new Error('Failed to create archive directory');
+            }
+
+            // Get or create file handle
+            const fileHandle = await archiveDirHandle.getFileHandle(filename, { create: true });
+            const writable = await fileHandle.createWritable();
+            
+            if (isBase64) {
+                // Convert base64 to blob
+                const base64Data = data.split(',')[1] || data;
+                const binaryString = atob(base64Data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                await writable.write(bytes);
+            } else {
+                await writable.write(data);
+            }
+            
+            await writable.close();
+            return true;
+        } catch (error) {
+            console.error('Error saving file to disk:', error);
+            throw error;
+        }
+    }
+
+    async saveFileWithDownloadAPI(filename, data, isBase64 = false) {
+        // Fallback for browsers without File System Access API
+        // Use showSaveFilePicker to let user choose where to save each file
+        try {
+            // Convert to blob
+            let blob;
+            if (isBase64) {
+                const base64Data = data.split(',')[1] || data;
+                const mimeMatch = data.match(/data:([^;]+);/);
+                const mimeType = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+                const binaryString = atob(base64Data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                blob = new Blob([bytes], { type: mimeType });
+            } else {
+                blob = new Blob([data]);
+            }
+            
+            // Store in IndexedDB for later retrieval
+            await this.storeFileInIndexedDB(filename, blob);
+            
+            // Try to use showSaveFilePicker to let user choose location
+            // This works in Chrome/Edge, and prompts user to choose where to save
+            if ('showSaveFilePicker' in window) {
+                try {
+                    // Determine file types based on extension
+                    const ext = filename.split('.').pop().toLowerCase();
+                    let types = [];
+                    
+                    if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
+                        types = [{
+                            description: 'Image files',
+                            accept: { 'image/*': [`.${ext}`] }
+                        }];
+                    } else if (['mp4', 'webm', 'mov'].includes(ext)) {
+                        types = [{
+                            description: 'Video files',
+                            accept: { 'video/*': [`.${ext}`] }
+                        }];
+                    }
+                    
+                    // Suggest saving to an archive subfolder
+                    const suggestedName = `archive/${filename}`;
+                    
+                    const fileHandle = await window.showSaveFilePicker({
+                        suggestedName: suggestedName,
+                        types: types.length > 0 ? types : undefined
+                    });
+                    
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(blob);
+                    await writable.close();
+                    return true;
+                } catch (error) {
+                    if (error.name === 'AbortError') {
+                        // User cancelled - file is still in IndexedDB
+                        return true;
+                    }
+                    console.warn('showSaveFilePicker failed, falling back to download:', error);
+                    // Fall through to download
+                }
+            }
+            
+            // Fallback: trigger download to Downloads folder
+            // This happens if showSaveFilePicker is not available (Firefox/Safari)
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            return true;
+        } catch (error) {
+            console.error('Error saving file with download API:', error);
+            throw error;
+        }
+    }
+
+    async storeFileInIndexedDB(filename, blob) {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('xoxowiki-files', 1);
+            
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                const db = request.result;
+                const transaction = db.transaction(['files'], 'readwrite');
+                const store = transaction.objectStore('files');
+                const fileRequest = store.put({ filename, blob, timestamp: Date.now() });
+                fileRequest.onsuccess = () => resolve();
+                fileRequest.onerror = () => reject(fileRequest.error);
+            };
+            
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains('files')) {
+                    db.createObjectStore('files', { keyPath: 'filename' });
+                }
+            };
+        });
+    }
+
+    async getFileFromIndexedDB(filename) {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('xoxowiki-files', 1);
+            
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                const db = request.result;
+                const transaction = db.transaction(['files'], 'readonly');
+                const store = transaction.objectStore('files');
+                const fileRequest = store.get(filename);
+                fileRequest.onsuccess = () => {
+                    const result = fileRequest.result;
+                    resolve(result ? result.blob : null);
+                };
+                fileRequest.onerror = () => reject(fileRequest.error);
+            };
+            
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains('files')) {
+                    db.createObjectStore('files', { keyPath: 'filename' });
+                }
+            };
+        });
+    }
+
+    async getFileFromDisk(filename) {
+        // Check if File System Access API is available
+        if ('showDirectoryPicker' in window && this.archiveDirectoryHandle) {
+            try {
+                const archiveDirHandle = await this.archiveDirectoryHandle.getDirectoryHandle('archive');
+                const fileHandle = await archiveDirHandle.getFileHandle(filename);
+                const file = await fileHandle.getFile();
+                return file;
+            } catch (error) {
+                console.error('Error reading file from disk:', error);
+                return null;
+            }
+        } else {
+            // Fallback: get from IndexedDB
+            try {
+                const blob = await this.getFileFromIndexedDB(filename);
+                if (blob) {
+                    // Convert blob to File-like object
+                    return new File([blob], filename, { type: blob.type });
+                }
+                return null;
+            } catch (error) {
+                console.error('Error reading file from IndexedDB:', error);
+                return null;
+            }
+        }
+    }
+
+    async deleteFileFromDisk(filename) {
+        // Check if File System Access API is available
+        if ('showDirectoryPicker' in window && this.archiveDirectoryHandle) {
+            try {
+                const archiveDirHandle = await this.archiveDirectoryHandle.getDirectoryHandle('archive');
+                await archiveDirHandle.removeEntry(filename);
+                return true;
+            } catch (error) {
+                console.error('Error deleting file from disk:', error);
+                return false;
+            }
+        } else {
+            // Fallback: delete from IndexedDB
+            try {
+                const request = indexedDB.open('xoxowiki-files', 1);
+                return new Promise((resolve) => {
+                    request.onsuccess = () => {
+                        const db = request.result;
+                        const transaction = db.transaction(['files'], 'readwrite');
+                        const store = transaction.objectStore('files');
+                        const deleteRequest = store.delete(filename);
+                        deleteRequest.onsuccess = () => resolve(true);
+                        deleteRequest.onerror = () => resolve(false);
+                    };
+                    request.onerror = () => resolve(false);
+                });
+            } catch (error) {
+                console.error('Error deleting file from IndexedDB:', error);
+                return false;
+            }
+        }
+    }
+
+    // ===== AT PROTOCOL BLOB (images on Bluesky, no self-hosting) =====
+    async uploadBlobToAtProtocol(blob, mimeType) {
+        if (!this.blueskyClient || !this.blueskyClient.accessJwt) {
+            throw new Error('Connect to Bluesky first to upload images to the AT Protocol.');
+        }
+        await this.ensureValidToken();
+        const formData = new FormData();
+        formData.append('file', blob, `image.${mimeType.split('/')[1] || 'jpg'}`);
+        const response = await fetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${this.blueskyClient.accessJwt}` },
+            body: formData
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.message || 'Failed to upload image to AT Protocol');
+        }
+        const data = await response.json();
+        return data.blob; // { $type, ref: { $link: "cid:..." }, mimeType, size }
+    }
+
+    getAtProtocolBlobUrl(cidOrRef, did = null) {
+        const cid = typeof cidOrRef === 'string'
+            ? (cidOrRef.startsWith('cid:') ? cidOrRef : `cid:${cidOrRef}`)
+            : (cidOrRef?.$link || cidOrRef?.cid || '');
+        const repoDid = did || this.blueskyClient?.did;
+        if (!cid || !repoDid) return null;
+        const cidOnly = String(cid).replace(/^cid:/, '');
+        return `https://bsky.social/xrpc/com.atproto.sync.getBlob?did=${encodeURIComponent(repoDid)}&cid=${encodeURIComponent(cidOnly)}`;
+    }
+
+    // Fetch feed from AT Protocol (public API) and extract posts with images/videos for browsing
+    async fetchBrowseFeed(cursor = null, limit = 30) {
+        const feedUri = 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot';
+        let url = `https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed?feed=${encodeURIComponent(feedUri)}&limit=${limit}`;
+        if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Failed to load feed');
+        const data = await response.json();
+        const items = [];
+        const feed = data.feed || [];
+        for (const item of feed) {
+            const post = item.post;
+            const author = post?.author;
+            const did = author?.did;
+            const handle = author?.handle || 'unknown';
+            const text = (post?.record?.text || '').slice(0, 200);
+            const postUri = post?.uri || '';
+            const embed = post?.embed;
+            if (!embed || !did) continue;
+            if (embed.images && Array.isArray(embed.images)) {
+                for (let i = 0; i < embed.images.length; i++) {
+                    const img = embed.images[i];
+                    const ref = img?.image?.ref || img?.ref;
+                    const cid = ref?.$link || ref;
+                    if (!cid) continue;
+                    const imageUrl = this.getAtProtocolBlobUrl(cid, did);
+                    if (imageUrl) {
+                        items.push({
+                            type: 'image',
+                            imageUrl,
+                            authorHandle: handle,
+                            authorDid: did,
+                            postUri,
+                            textSnippet: text,
+                            alt: img.alt || ''
+                        });
+                    }
+                }
+            }
+            if (embed.media && embed.media.image) {
+                const ref = embed.media.image.ref || embed.media.image;
+                const cid = ref?.$link || ref;
+                if (cid) {
+                    const imageUrl = this.getAtProtocolBlobUrl(cid, did);
+                    if (imageUrl) {
+                        items.push({
+                            type: 'video',
+                            imageUrl: embed.media.thumbnail ? this.getAtProtocolBlobUrl(embed.media.thumbnail.ref || embed.media.thumbnail, did) : imageUrl,
+                            videoUrl: imageUrl,
+                            authorHandle: handle,
+                            authorDid: did,
+                            postUri,
+                            textSnippet: text,
+                            alt: ''
+                        });
+                    }
+                }
+            }
+        }
+        return { items, cursor: data.cursor || null };
+    }
+
+    // Get image data URL - AT Protocol URL, imageUrl, disk/IndexedDB, or imageData
+    async getArchiveItemImageData(item) {
+        // 1) External URL (e.g. Bluesky CDN, AT Protocol blob URL) – use as-is for display
+        if (item.imageUrl) {
+            return item.imageUrl;
+        }
+        // 2) AT Protocol blob ref (image hosted on Bluesky)
+        if (item.atBlobRef) {
+            const ref = item.atBlobRef;
+            const cid = (typeof ref === 'string' ? ref : ref?.$link ?? ref?.cid) || '';
+            const did = item.atBlobRefDid ?? this.blueskyClient?.did;
+            if (cid && did) {
+                const cidOnly = typeof cid === 'string' ? cid.replace(/^cid:/, '') : String(cid);
+                return `https://bsky.social/xrpc/com.atproto.sync.getBlob?did=${encodeURIComponent(did)}&cid=${encodeURIComponent(cidOnly)}`;
+            }
+        }
+        // 3) Local file (disk or IndexedDB)
+        if (item.filename) {
+            try {
+                const file = await this.getFileFromDisk(item.filename);
+                if (file) {
+                    return new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = (e) => resolve(e.target.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(file);
+                    });
+                }
+            } catch (error) {
+                console.warn('Failed to load file, trying fallback:', error);
+            }
+        }
+        return item.imageData || null;
+    }
+
+    // ===== STORAGE MANAGEMENT =====
+    getStorageUsage() {
+        let totalSize = 0;
+        const usage = {};
+        
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith('xoxowiki-')) {
+                const value = localStorage.getItem(key);
+                const size = new Blob([value]).size;
+                totalSize += size;
+                usage[key] = {
+                    size: size,
+                    sizeMB: (size / (1024 * 1024)).toFixed(2)
+                };
+            }
+        }
+        
+        return {
+            total: totalSize,
+            totalMB: (totalSize / (1024 * 1024)).toFixed(2),
+            breakdown: usage
+        };
+    }
+    
+    getArchiveSize() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-archive');
+            if (!stored) return { size: 0, sizeMB: '0.00', itemCount: 0 };
+            const size = new Blob([stored]).size;
+            const archive = JSON.parse(stored);
+            return {
+                size: size,
+                sizeMB: (size / (1024 * 1024)).toFixed(2),
+                itemCount: archive.length
+            };
+        } catch {
+            return { size: 0, sizeMB: '0.00', itemCount: 0 };
+        }
+    }
+    
+    deleteOldestArchiveItems(count = 10) {
+        const archive = this.getArchive();
+        if (archive.length <= count) {
+            // Don't delete everything, keep at least 5 items
+            const keepCount = Math.max(5, archive.length - count);
+            const toKeep = archive.slice(0, keepCount);
+            localStorage.setItem('xoxowiki-archive', JSON.stringify(toKeep));
+            return archive.length - toKeep.length;
+        }
+        const toKeep = archive.slice(0, archive.length - count);
+        localStorage.setItem('xoxowiki-archive', JSON.stringify(toKeep));
+        return count;
+    }
+
+    // ===== ARCHIVE (Images) =====
+    getArchive() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-archive');
+            return stored ? JSON.parse(stored) : [];
+        } catch { return []; }
+    }
+
+    async saveArchiveItem(item) {
+        try {
+            const hasUrl = item.imageUrl && item.imageUrl.startsWith('http');
+            const hasData = item.imageData;
+            if (!hasUrl && !hasData) {
+                throw new Error('Provide an image URL or image data.');
+            }
+            
+            item.id = item.id || (Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9));
+            item.createdAt = item.createdAt || new Date().toISOString();
+            
+            // Option A: External URL (AT Protocol / Bluesky CDN / any URL) – no upload, no local file
+            if (hasUrl) {
+                const archive = this.getArchive();
+                const metadata = {
+                    id: item.id,
+                    name: item.name || 'Image',
+                    type: item.type || 'image',
+                    source: item.source,
+                    createdAt: item.createdAt,
+                    imageUrl: item.imageUrl,
+                    albumIds: item.albumIds || [],
+                    articleIds: item.articleIds || [],
+                    habitDays: item.habitDays || [],
+                    assignmentType: item.assignmentType || 'albums'
+                };
+                archive.unshift(metadata);
+                localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+                await this.syncArchiveToBlueskyIfConnected();
+                return item;
+            }
+            
+            // Option B: Upload to AT Protocol when Bluesky is connected (for GitHub Pages – images live on Bluesky)
+            if (hasData && this.blueskyClient && this.blueskyClient.accessJwt) {
+                let blob;
+                let mimeType = 'image/jpeg';
+                if (item.imageData.startsWith('data:')) {
+                    const match = item.imageData.match(/data:([^;]+);base64,(.+)/);
+                    if (match) {
+                        mimeType = match[1];
+                        const bin = atob(match[2]);
+                        const bytes = new Uint8Array(bin.length);
+                        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                        blob = new Blob([bytes], { type: mimeType });
+                    }
+                }
+                if (blob) {
+                    const blobResult = await this.uploadBlobToAtProtocol(blob, mimeType);
+                    const archive = this.getArchive();
+                    const metadata = {
+                        id: item.id,
+                        name: item.name,
+                        type: item.type,
+                        source: item.source,
+                        createdAt: item.createdAt,
+                        atBlobRef: blobResult.ref,
+                        atBlobRefDid: this.blueskyClient.did,
+                        albumIds: item.albumIds || [],
+                        articleIds: item.articleIds || [],
+                        habitDays: item.habitDays || [],
+                        assignmentType: item.assignmentType || 'albums'
+                    };
+                    archive.unshift(metadata);
+                    localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+                    await this.syncArchiveToBlueskyIfConnected();
+                    return item;
+                }
+            }
+            
+            // Option C: Local file (disk or IndexedDB) when not using AT Protocol
+            let extension = 'bin';
+            if (item.imageData.startsWith('data:')) {
+                const match = item.imageData.match(/data:([^;]+);/);
+                if (match) {
+                    const mimeType = match[1];
+                    if (mimeType.includes('jpeg') || mimeType.includes('jpg')) extension = 'jpg';
+                    else if (mimeType.includes('png')) extension = 'png';
+                    else if (mimeType.includes('gif')) extension = 'gif';
+                    else if (mimeType.includes('webp')) extension = 'webp';
+                    else if (mimeType.includes('video')) extension = 'mp4';
+                }
+            }
+            const filename = `${item.id}.${extension}`;
+            await this.saveFileToDisk(filename, item.imageData, true);
+            item.filename = filename;
+            
+            const archive = this.getArchive();
+            const metadata = {
+                id: item.id,
+                name: item.name,
+                type: item.type,
+                source: item.source,
+                createdAt: item.createdAt,
+                filename,
+                albumIds: item.albumIds || [],
+                articleIds: item.articleIds || [],
+                habitDays: item.habitDays || [],
+                assignmentType: item.assignmentType || 'albums'
+            };
+            archive.unshift(metadata);
+            localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+            return item;
+        } catch (error) {
+            console.error('Error saving archive item:', error);
+            if (error.name === 'QuotaExceededError' || error.code === 22) {
+                throw new Error('Storage quota exceeded. Connect to Bluesky to store images on the AT Protocol, or select a folder.');
+            }
+            throw error;
+        }
+    }
+
+    async syncArchiveToBlueskyIfConnected() {
+        if (!this.blueskyClient || !this.blueskyClient.accessJwt) return;
+        try {
+            await this.ensureValidToken();
+            const archive = this.getArchive();
+            const albums = this.getAlbums();
+            const payload = {
+                archive: archive.map(a => ({
+                    id: a.id,
+                    name: a.name,
+                    type: a.type,
+                    source: a.source,
+                    createdAt: a.createdAt,
+                    imageUrl: a.imageUrl || null,
+                    atBlobRef: a.atBlobRef || null,
+                    atBlobRefDid: a.atBlobRefDid || null,
+                    albumIds: a.albumIds || [],
+                    articleIds: a.articleIds || [],
+                    habitDays: a.habitDays || [],
+                    assignmentType: a.assignmentType || 'albums'
+                })),
+                albums,
+                updatedAt: new Date().toISOString()
+            };
+            const record = {
+                $type: 'com.atproto.repo.record',
+                key: 'xoxowiki-archive',
+                title: 'Archive',
+                content: JSON.stringify(payload),
+                createdAt: new Date().toISOString()
+            };
+            const getRes = await fetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`, {
+                headers: { 'Authorization': `Bearer ${this.blueskyClient.accessJwt}` }
+            });
+            const body = { repo: this.blueskyClient.did, collection: 'com.atproto.repo.record', rkey: 'xoxowiki-archive', record };
+            if (getRes.ok) {
+                await fetch('https://bsky.social/xrpc/com.atproto.repo.putRecord', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${this.blueskyClient.accessJwt}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+            } else {
+                await fetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${this.blueskyClient.accessJwt}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+            }
+        } catch (e) {
+            console.warn('Sync archive to Bluesky failed:', e);
+        }
+    }
+
+    async deleteArchiveItem(id) {
+        const archive = this.getArchive();
+        const item = archive.find(a => a.id === id);
+        
+        // Delete file from disk if it exists
+        if (item && item.filename) {
+            await this.deleteFileFromDisk(item.filename);
+        }
+        
+        const filtered = archive.filter(a => a.id !== id);
+        localStorage.setItem('xoxowiki-archive', JSON.stringify(filtered));
+    }
+
+    updateArchiveItem(id, updates) {
+        const archive = this.getArchive();
+        const idx = archive.findIndex(a => a.id === id);
+        if (idx !== -1) {
+            archive[idx] = { ...archive[idx], ...updates };
+            localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+        }
+    }
+
+    getArchiveByAlbum(albumId) {
+        return this.getArchive().filter(a => {
+            // Support both old single albumId and new albumIds array
+            const itemAlbums = a.albumIds || (a.albumId ? [a.albumId] : []);
+            return itemAlbums.includes(albumId);
+        });
+    }
+
+    // ===== ALBUMS =====
+    getAlbums() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-albums');
+            return stored ? JSON.parse(stored) : [];
+        } catch { return []; }
+    }
+
+    saveAlbum(album) {
+        const albums = this.getAlbums();
+        album.id = Date.now().toString();
+        album.createdAt = new Date().toISOString();
+        albums.push(album);
+        localStorage.setItem('xoxowiki-albums', JSON.stringify(albums));
+        return album;
+    }
+
+    deleteAlbum(id) {
+        const albums = this.getAlbums().filter(a => a.id !== id);
+        localStorage.setItem('xoxowiki-albums', JSON.stringify(albums));
+        // Also remove album association from archive items (support both old albumId and new albumIds array)
+        const archive = this.getArchive().map(a => {
+            // Handle old single albumId format
+            if (a.albumId === id) {
+                a.albumId = null;
+            }
+            // Handle new albumIds array format
+            if (a.albumIds && Array.isArray(a.albumIds)) {
+                a.albumIds = a.albumIds.filter(albumId => albumId !== id);
+            }
+            return a;
+        });
+        localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+    }
+
+    // ===== SECTION ORDER =====
+    getSectionOrder() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-section-order');
+            return stored ? JSON.parse(stored) : null;
+        } catch { return null; }
+    }
+
+    saveSectionOrder(order) {
+        localStorage.setItem('xoxowiki-section-order', JSON.stringify(order));
+    }
+
+    getBentoSizes() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-bento-sizes');
+            return stored ? JSON.parse(stored) : {};
+        } catch { return {}; }
+    }
+
+    saveBentoSize(section, size) {
+        const sizes = this.getBentoSizes();
+        sizes[section] = size;
+        localStorage.setItem('xoxowiki-bento-sizes', JSON.stringify(sizes));
+    }
+
+    // ===== PINNED ARTICLES =====
+    getPinnedArticles() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-pinned');
+            return stored ? JSON.parse(stored) : [];
+        } catch { return []; }
+    }
+
+    togglePinArticle(key) {
+        const pinned = this.getPinnedArticles();
+        const idx = pinned.indexOf(key);
+        if (idx === -1) pinned.unshift(key);
+        else pinned.splice(idx, 1);
+        localStorage.setItem('xoxowiki-pinned', JSON.stringify(pinned));
+        return pinned;
+    }
+
+    // ===== ACTIVITY FEED =====
+    getActivityFeed() {
+        try {
+            const stored = localStorage.getItem('xoxowiki-activity');
+            return stored ? JSON.parse(stored) : [];
+        } catch { return []; }
+    }
+
+    logActivity(type, data) {
+        const feed = this.getActivityFeed();
+        feed.unshift({ type, data, timestamp: new Date().toISOString() });
+        if (feed.length > 50) feed.pop();
+        localStorage.setItem('xoxowiki-activity', JSON.stringify(feed));
+    }
+
+    // ===== ARTICLE METADATA =====
+    getArticleMeta(key) {
+        try {
+            const stored = localStorage.getItem('xoxowiki-meta');
+            const meta = stored ? JSON.parse(stored) : {};
+            return meta[key] || { isPublic: true, source: '', remixedFrom: null };
+        } catch { return { isPublic: true, source: '', remixedFrom: null }; }
+    }
+
+    saveArticleMeta(key, data) {
+        try {
+            const stored = localStorage.getItem('xoxowiki-meta');
+            const meta = stored ? JSON.parse(stored) : {};
+            meta[key] = { ...this.getArticleMeta(key), ...data };
+            localStorage.setItem('xoxowiki-meta', JSON.stringify(meta));
+        } catch (e) { console.error('Error saving meta:', e); }
+    }
+
+    getBacklinks(key) {
+        const backlinks = [];
+        for (const [k, article] of Object.entries(this.articles)) {
+            if (k !== key && article.content && article.content.includes(`[[${key}]]`)) {
+                backlinks.push({ key: k, title: article.title });
+            }
+        }
+        return backlinks;
+    }
+}
