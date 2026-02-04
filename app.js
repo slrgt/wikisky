@@ -84,7 +84,21 @@ class WikiApp {
             this.articles = {};
         }
     }
-    
+
+    /** When logged into Bluesky, returns HTML for a small blue cloud icon indicating synced to PDS; otherwise '' */
+    getPdsSyncCloudIcon() {
+        if (this.storage.storageMode !== 'bluesky') return '';
+        return `<span class="pds-sync-cloud" title="Synced to Bluesky PDS" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg></span>`;
+    }
+
+    /** Label under artboard media: poster username or "Source" / "View details". Full URL is only in the edit window. */
+    getArchiveItemMetaLabel(item) {
+        if (item.authorHandle) return this.escapeHtml(`@${item.authorHandle}`);
+        if (item.name && item.name !== 'From feed' && item.name.length < 40) return this.escapeHtml(item.name);
+        if (item.source) return 'Source';
+        return 'View details';
+    }
+
     // Check if in mobile mode based on viewport width (vw)
     // Mobile mode activates when viewport width <= 68.75vw of a 1600px reference viewport
     // This equals 1100px, but scales with different viewport sizes
@@ -274,6 +288,8 @@ class WikiApp {
                     this.closeBlueskyModal();
                 } else if (e.target.closest('#webcomic-upload-modal')) {
                     this.closeUploadWebcomicModal();
+                } else if (e.target.closest('#pds-data-modal')) {
+                    this.closePDSDataModal();
                 } else {
                     this.closeModal();
                 }
@@ -287,6 +303,11 @@ class WikiApp {
         
         const cancelBlueskyBtn = document.getElementById('cancel-bluesky');
         if (cancelBlueskyBtn) cancelBlueskyBtn.addEventListener('click', () => this.closeBlueskyModal());
+
+        const viewPdsDataBtn = document.getElementById('view-pds-data');
+        if (viewPdsDataBtn) viewPdsDataBtn.addEventListener('click', () => this.showPDSDataModal());
+        const pdsDataModalCloseBtn = document.getElementById('pds-data-modal-close-btn');
+        if (pdsDataModalCloseBtn) pdsDataModalCloseBtn.addEventListener('click', () => this.closePDSDataModal());
 
         // Archive directory selection
         const selectArchiveDirBtn = document.getElementById('select-archive-directory');
@@ -409,7 +430,11 @@ class WikiApp {
                                 assignmentType: 'albums',
                                 articleIds: [],
                                 habitDays: [],
-                                source: it.source || url
+                                source: it.source || url,
+                                authorHandle: it.authorHandle,
+                                authorDid: it.authorDid,
+                                authorDisplayName: it.authorDisplayName,
+                                postText: it.postText ?? it.textSnippet
                             });
                         }
                         mediaImageUrlInput.value = '';
@@ -2424,7 +2449,7 @@ class WikiApp {
             const article = this.articles[key];
             const isBookmarked = this.storage.isBookmarked(key);
             const bookmarkIcon = isBookmarked ? ' (saved)' : '';
-            return `<li><a href="#${key}" data-route="${key}">${article.title}${bookmarkIcon}</a></li>`;
+            return `<li><a href="#${key}" data-route="${key}">${article.title}${bookmarkIcon}${this.getPdsSyncCloudIcon()}</a></li>`;
         }).join('');
 
         container.innerHTML = `
@@ -3429,6 +3454,7 @@ class WikiApp {
         const menuDisconnectBtn = document.getElementById('menu-disconnect-bluesky');
         const sidebarConnectBtn = document.getElementById('connect-bluesky');
         const sidebarDisconnectBtn = document.getElementById('disconnect-bluesky');
+        const viewPdsBtn = document.getElementById('view-pds-data');
         const menuRssFeed = document.getElementById('menu-rss-feed');
         const headerBlueskyBtn = document.getElementById('header-bluesky-btn');
 
@@ -3439,6 +3465,7 @@ class WikiApp {
             if (menuDisconnectBtn) menuDisconnectBtn.style.display = 'flex';
             if (sidebarConnectBtn) sidebarConnectBtn.style.display = 'none';
             if (sidebarDisconnectBtn) sidebarDisconnectBtn.style.display = 'block';
+            if (viewPdsBtn) viewPdsBtn.style.display = 'block';
             if (menuRssFeed) menuRssFeed.style.display = 'flex';
             if (headerBlueskyBtn) {
                 headerBlueskyBtn.title = 'Bluesky (connected)';
@@ -3451,12 +3478,52 @@ class WikiApp {
             if (menuDisconnectBtn) menuDisconnectBtn.style.display = 'none';
             if (sidebarConnectBtn) sidebarConnectBtn.style.display = 'block';
             if (sidebarDisconnectBtn) sidebarDisconnectBtn.style.display = 'none';
+            if (viewPdsBtn) viewPdsBtn.style.display = 'none';
             if (menuRssFeed) menuRssFeed.style.display = 'flex';
             if (headerBlueskyBtn) {
                 headerBlueskyBtn.title = 'Login with Bluesky';
                 headerBlueskyBtn.setAttribute('aria-label', 'Login with Bluesky');
             }
         }
+    }
+
+    async showPDSDataModal() {
+        const modal = document.getElementById('pds-data-modal');
+        const body = document.getElementById('pds-data-modal-body');
+        const pdslsLink = document.getElementById('pds-data-open-pdsls');
+        if (!modal || !body) return;
+        modal.style.display = 'flex';
+        body.innerHTML = '<p style="color: #72777d;">Loading…</p>';
+        try {
+            const summary = await this.storage.getPDSStorageSummary();
+            if (summary.error) {
+                body.innerHTML = `<p style="color: #b32424;">${this.escapeHtml(summary.error)}</p>`;
+                pdslsLink.style.display = 'none';
+                return;
+            }
+            const did = summary.did || '';
+            const handle = summary.handle || did;
+            const art = summary.articles || {};
+            const arch = summary.archive || {};
+            let html = `<p><strong>Account</strong><br>Handle: ${this.escapeHtml(handle)}<br>DID: <code style="font-size: 11px; word-break: break-all;">${this.escapeHtml(did)}</code></p>`;
+            html += `<p><strong>Articles</strong> (collection <code>site.standard.document</code>): ${art.count || 0} record(s) on PDS</p>`;
+            if (art.rkeys && art.rkeys.length > 0) {
+                const show = art.rkeys.slice(0, 30);
+                html += `<p style="font-size: 12px; color: #54595d;">Keys: ${show.map(k => this.escapeHtml(k)).join(', ')}${art.rkeys.length > 30 ? ' …' : ''}</p>`;
+            }
+            html += `<p><strong>Artboards</strong> (record <code>com.atproto.repo.record</code> / <code>xoxowiki-archive</code>): ${arch.hasRecord ? `${arch.itemCount || 0} item(s), ${arch.albumCount || 0} album(s)` : 'No record'}</p>`;
+            body.innerHTML = html;
+            pdslsLink.href = did ? `https://pdsls.dev/${encodeURIComponent(did)}` : 'https://pdsls.dev';
+            pdslsLink.style.display = 'inline-flex';
+        } catch (e) {
+            body.innerHTML = `<p style="color: #b32424;">${this.escapeHtml(e.message || 'Failed to load')}</p>`;
+            pdslsLink.style.display = 'none';
+        }
+    }
+
+    closePDSDataModal() {
+        const modal = document.getElementById('pds-data-modal');
+        if (modal) modal.style.display = 'none';
     }
 
     async generateRSSFeed() {
@@ -6825,7 +6892,11 @@ ${document.body.innerHTML}
                                 assignmentType: 'albums',
                                 articleIds: [],
                                 habitDays: [],
-                                source: it.source || url
+                                source: it.source || url,
+                                authorHandle: it.authorHandle,
+                                authorDid: it.authorDid,
+                                authorDisplayName: it.authorDisplayName,
+                                postText: it.postText ?? it.textSnippet
                             });
                         }
                         if (mediaImageUrlInput) mediaImageUrlInput.value = '';
@@ -6875,6 +6946,10 @@ ${document.body.innerHTML}
                         item.imageData = f.data;
                     }
                     if (f.videoUrl) item.videoUrl = f.videoUrl;
+                    if (f.authorHandle) item.authorHandle = f.authorHandle;
+                    if (f.authorDid) item.authorDid = f.authorDid;
+                    if (f.authorDisplayName) item.authorDisplayName = f.authorDisplayName;
+                    if (f.postText) item.postText = f.postText;
                     if (assignmentType === 'albums') {
                         item.albumIds = f.albumIds || [];
                     } else if (assignmentType === 'articles') {
@@ -7082,7 +7157,11 @@ ${document.body.innerHTML}
             albumIds: [],
             assignmentType: 'albums',
             articleIds: [],
-            habitDays: []
+            habitDays: [],
+            authorHandle: item.authorHandle,
+            authorDid: item.authorDid,
+            authorDisplayName: item.authorDisplayName,
+            postText: item.postText ?? item.textSnippet
         };
         try {
             const saved = await this.storage.saveArchiveItem(archiveItem);
@@ -7157,8 +7236,9 @@ ${document.body.innerHTML}
                         ? `<video data-item-id="${item.id}" controls playsinline style="background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
                         : `<img data-item-id="${item.id}" alt="${item.name || 'Image'}" style="background: #f0f0f0;">`}
                     <div class="archive-item-overlay"></div>
+                    <div class="archive-item-pds-badge">${this.getPdsSyncCloudIcon()}</div>
                 </div>
-                ${item.source ? `<div class="archive-item-source" onclick="event.stopPropagation()"><a href="${this.escapeHtml(item.source)}" target="_blank" rel="noopener">${this.escapeHtml(item.source.length > 50 ? item.source.slice(0, 47) + '…' : item.source)}</a></div>` : ''}
+                <div class="archive-item-meta" title="Click to view details and source URL">${this.getArchiveItemMetaLabel(item)}</div>
             </div>
         `;
         }).join('') : '<p class="archive-empty">No items yet. Click the + button to add media!</p>';
@@ -7189,7 +7269,7 @@ ${document.body.innerHTML}
         container.innerHTML = `
             ${this.renderSectionNav()}
             <div class="article-header">
-                <h1>${currentAlbum ? currentAlbum.name : 'Artboards'}</h1>
+                <h1>${currentAlbum ? currentAlbum.name : 'Artboards'}${this.getPdsSyncCloudIcon()}</h1>
                 <div class="article-header-upload-wrapper">
                     <button class="btn-primary archive-upload-btn" onclick="window.wikiApp.openCreateModal('media')" style="display: inline-flex; align-items: center;">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:0.5em;">
@@ -7265,7 +7345,16 @@ ${document.body.innerHTML}
         // Load image/video URL (poster or image data)
         const imageData = await this.loadArchiveItemImage(item);
         const videoSrc = item.type === 'video' ? (item.videoUrl || imageData) : '';
-        
+        const postText = (item.postText || item.textSnippet || '').trim();
+        const hasAuthor = !!(item.authorHandle || item.authorDid);
+        const profileHref = item.source || (item.authorHandle ? `https://bsky.app/profile/${item.authorHandle}` : (item.authorDid ? `https://bsky.app/profile/${item.authorDid}` : ''));
+        const authorLabel = item.authorDisplayName ? `${this.escapeHtml(item.authorDisplayName)} (@${this.escapeHtml(item.authorHandle || item.authorDid || '')})` : (item.authorHandle || item.authorDid ? `@${this.escapeHtml(item.authorHandle || item.authorDid)}` : '');
+        const postAndAuthorBlock = (postText || hasAuthor) ? `
+                    <div class="archive-lightbox-post-author">
+                        ${hasAuthor ? `<div class="archive-lightbox-author">Posted by ${profileHref ? `<a href="${this.escapeHtml(profileHref)}" target="_blank" rel="noopener">${authorLabel}</a>` : authorLabel}</div>` : ''}
+                        ${postText ? `<div class="archive-lightbox-post-text">${this.escapeHtml(postText)}</div>` : ''}
+                    </div>
+                ` : '';
         // Editable lightbox view
         const overlay = document.createElement('div');
         overlay.className = 'archive-lightbox';
@@ -7276,6 +7365,7 @@ ${document.body.innerHTML}
                 ${item.type === 'video' 
                     ? `<video src="${videoSrc || ''}" ${imageData ? `poster="${imageData}"` : ''} controls autoplay></video>`
                     : `<img src="${imageData || ''}" alt="${item.name || 'Image'}">`}
+                ${postAndAuthorBlock}
                 <div class="archive-lightbox-form">
                     <div class="form-row">
                         <label>Source URL</label>

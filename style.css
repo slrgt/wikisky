@@ -3874,8 +3874,65 @@ h3:hover .section-actions {
     text-decoration: underline;
 }
 
+/* Under media: poster username or "Source" / "View details"; click opens edit window (full URL there) */
+.archive-item-meta {
+    padding: 0.35em 0.5em 0.5em;
+    font-size: 0.75rem;
+    line-height: 1.3;
+    background: #f0f4f8;
+    border-top: 1px solid #e5e9ed;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #0645ad;
+    cursor: pointer;
+}
+
+.archive-item-meta:hover {
+    text-decoration: underline;
+}
+
 .archive-page-item:hover {
     box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+/* Blue cloud = synced to Bluesky PDS (when logged in) */
+.pds-sync-cloud {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #0645ad;
+    margin-left: 0.25em;
+    vertical-align: middle;
+}
+
+.pds-sync-cloud svg {
+    display: block;
+}
+
+.archive-item-pds-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 2;
+    pointer-events: none;
+}
+
+.archive-item-pds-badge:empty {
+    display: none;
+}
+
+.archive-item-pds-badge .pds-sync-cloud {
+    margin-left: 0;
+    background: rgba(255,255,255,0.9);
+    border-radius: 50%;
+    padding: 3px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.archive-item-pds-badge .pds-sync-cloud svg {
+    width: 14px;
+    height: 14px;
 }
 
 /* Browse page (AT Protocol feed) */
@@ -4019,6 +4076,35 @@ h3:hover .section-actions {
     max-height: 60vh;
     width: auto;
     height: auto;
+}
+
+.archive-lightbox-post-author {
+    width: 100%;
+    padding: 0.75em 1.5em;
+    background: #1a1a1a;
+    border-top: 1px solid #333;
+    font-size: 14px;
+}
+
+.archive-lightbox-author {
+    margin-bottom: 0.5em;
+    color: #aaa;
+}
+
+.archive-lightbox-author a {
+    color: #a7d7f9;
+    text-decoration: none;
+}
+
+.archive-lightbox-author a:hover {
+    text-decoration: underline;
+}
+
+.archive-lightbox-post-text {
+    color: #e0e0e0;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 .archive-lightbox-form {

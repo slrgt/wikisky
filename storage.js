@@ -104,6 +104,10 @@ class WikiStorage {
                 if (session.refreshJwt) {
                     try {
                         if (session.oauth && localStorage.getItem('bluesky-oauth-dpop-private-jwk')) {
+                            // One-time migration: public JWK was previously saved under wrong key
+                            if (!localStorage.getItem('bluesky-oauth-dpop-public-jwk') && localStorage.getItem('bluesky-dpop-public-jwk')) {
+                                localStorage.setItem('bluesky-oauth-dpop-public-jwk', localStorage.getItem('bluesky-dpop-public-jwk'));
+                            }
                             await this._oauthRefresh();
                         } else {
                             const response = await fetch('https://bsky.social/xrpc/com.atproto.server.refreshSession', {
@@ -431,7 +435,7 @@ class WikiStorage {
             const redirectUri = this._oauthRedirectUri();
             const privateKey = await this._importPrivateKeyJwk(JSON.parse(privateJwk));
             const publicJwk = JSON.parse(sessionStorage.getItem('bluesky-oauth-dpop-public-jwk') || '{}');
-            localStorage.setItem('bluesky-dpop-public-jwk', JSON.stringify(publicJwk));
+            localStorage.setItem('bluesky-oauth-dpop-public-jwk', JSON.stringify(publicJwk));
             const dpopProof = await this._buildDpopProof('POST', tokenEndpoint, dpopNonce || undefined, privateKey, publicJwk);
 
             const tokenBody = new URLSearchParams({
@@ -589,6 +593,65 @@ class WikiStorage {
             }
         }
         return true;
+    }
+
+    /**
+     * Fetch a summary of what's stored on the PDS (for "View data on PDS").
+     * Uses: site.standard.document (articles), com.atproto.repo.record rkey xoxowiki-archive (artboards).
+     */
+    async getPDSStorageSummary() {
+        if (!this.blueskyClient?.accessJwt) {
+            return { error: 'Not connected to Bluesky' };
+        }
+        try {
+            await this.ensureValidToken();
+            const did = this.blueskyClient.did;
+            const handle = this.blueskyClient.handle || did;
+
+            const articleRkeys = [];
+            let cursor = undefined;
+            do {
+                let url = `https://bsky.social/xrpc/com.atproto.repo.listRecords?repo=${did}&collection=site.standard.document&limit=100`;
+                if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+                const res = await this._pdsFetch(url);
+                if (!res.ok) break;
+                const data = await res.json();
+                if (data.records) {
+                    data.records.forEach(r => {
+                        const rkey = r.value?.path || r.rkey;
+                        if (rkey) articleRkeys.push(rkey);
+                    });
+                }
+                cursor = data.cursor || null;
+            } while (cursor);
+
+            let archiveHasRecord = false;
+            let archiveItemCount = 0;
+            let archiveAlbumCount = 0;
+            const archiveRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
+            if (archiveRes.ok) {
+                const archiveData = await archiveRes.json();
+                const content = archiveData.value?.content;
+                if (typeof content === 'string') {
+                    try {
+                        const payload = JSON.parse(content);
+                        archiveHasRecord = true;
+                        if (payload.archive && Array.isArray(payload.archive)) archiveItemCount = payload.archive.length;
+                        if (payload.albums && Array.isArray(payload.albums)) archiveAlbumCount = payload.albums.length;
+                    } catch (_) {}
+                }
+            }
+
+            return {
+                did,
+                handle,
+                articles: { count: articleRkeys.length, rkeys: articleRkeys },
+                archive: { hasRecord: archiveHasRecord, itemCount: archiveItemCount, albumCount: archiveAlbumCount }
+            };
+        } catch (e) {
+            console.warn('getPDSStorageSummary failed', e);
+            return { error: (e.message || String(e)) };
+        }
     }
 
     // Disconnect from Bluesky
@@ -1804,7 +1867,7 @@ class WikiStorage {
         const handleDisplay = author.displayName || author.handle || handle;
         const embed = postView.embed;
         const items = [];
-        const text = (postView.record?.text || '').slice(0, 100);
+        const postText = (postView.record?.text || '').trim();
         if (embed) {
             // App View returns images in view format: { thumb: url, fullsize: url, alt } (URI strings)
             const imagesList = embed.images && Array.isArray(embed.images) ? embed.images : (embed.media && embed.media.images && Array.isArray(embed.media.images) ? embed.media.images : null);
@@ -1827,7 +1890,10 @@ class WikiStorage {
                             imageUrl,
                             name: imagesList.length > 1 ? `Image ${i + 1} from @${handleDisplay}` : `Image from @${handleDisplay}`,
                             source: sourceUrl,
-                            textSnippet: text,
+                            postText: postText || undefined,
+                            authorHandle: author.handle,
+                            authorDid: author.did,
+                            authorDisplayName: author.displayName,
                             alt: img.alt || ''
                         });
                     }
@@ -1857,7 +1923,10 @@ class WikiStorage {
                     videoUrl: videoFromDirect,
                     name: `Video from @${handleDisplay}`,
                     source: sourceUrl,
-                    textSnippet: text,
+                    postText: postText || undefined,
+                    authorHandle: author.handle,
+                    authorDid: author.did,
+                    authorDisplayName: author.displayName,
                     alt: embed.alt || ''
                 });
             } else if (media) {
@@ -1882,7 +1951,10 @@ class WikiStorage {
                         videoUrl: finalVideoUrl,
                         name: `Video from @${handleDisplay}`,
                         source: sourceUrl,
-                        textSnippet: text,
+                        postText: postText || undefined,
+                        authorHandle: author.handle,
+                        authorDid: author.did,
+                        authorDisplayName: author.displayName,
                         alt: media.alt || ''
                     });
                 } else if (media.image) {
@@ -1898,7 +1970,10 @@ class WikiStorage {
                             videoUrl,
                             name: `Video from @${handleDisplay}`,
                             source: sourceUrl,
-                            textSnippet: text,
+                            postText: postText || undefined,
+                            authorHandle: author.handle,
+                            authorDid: author.did,
+                            authorDisplayName: author.displayName,
                             alt: ''
                         });
                     }
@@ -1918,9 +1993,10 @@ class WikiStorage {
             const author = post?.author;
             const did = author?.did;
             const handle = author?.handle || 'unknown';
-            const text = (post?.record?.text || '').slice(0, 200);
+            const postText = (post?.record?.text || '').trim();
             const postUri = post?.uri || '';
             const embed = post?.embed;
+            const authorDisplayName = author?.displayName;
             if (!embed || !did) continue;
             const imagesList = embed.images && Array.isArray(embed.images) ? embed.images : (embed.media && embed.media.images && Array.isArray(embed.media.images) ? embed.media.images : null);
             if (imagesList) {
@@ -1936,8 +2012,10 @@ class WikiStorage {
                             imageUrl,
                             authorHandle: handle,
                             authorDid: did,
+                            authorDisplayName: authorDisplayName,
                             postUri,
-                            textSnippet: text,
+                            textSnippet: postText,
+                            postText: postText,
                             alt: img.alt || ''
                         });
                     }
@@ -1955,8 +2033,10 @@ class WikiStorage {
                             videoUrl: imageUrl,
                             authorHandle: handle,
                             authorDid: did,
+                            authorDisplayName: authorDisplayName,
                             postUri,
-                            textSnippet: text,
+                            textSnippet: postText,
+                            postText: postText,
                             alt: ''
                         });
                     }
@@ -2112,6 +2192,11 @@ class WikiStorage {
                     assignmentType: item.assignmentType || 'albums'
                 };
                 if (item.videoUrl) metadata.videoUrl = item.videoUrl;
+                if (item.authorHandle) metadata.authorHandle = item.authorHandle;
+                if (item.authorDid) metadata.authorDid = item.authorDid;
+                if (item.authorDisplayName) metadata.authorDisplayName = item.authorDisplayName;
+                const pt = item.postText ?? item.textSnippet;
+                if (pt) metadata.postText = pt;
                 archive.unshift(metadata);
                 localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
                 await this.syncArchiveToBlueskyIfConnected();
@@ -2150,6 +2235,11 @@ class WikiStorage {
                         assignmentType: item.assignmentType || 'albums'
                     };
                     if (item.type === 'video' && blobUrl) metadata.videoUrl = blobUrl;
+                    if (item.authorHandle) metadata.authorHandle = item.authorHandle;
+                    if (item.authorDid) metadata.authorDid = item.authorDid;
+                    if (item.authorDisplayName) metadata.authorDisplayName = item.authorDisplayName;
+                    const pt = item.postText ?? item.textSnippet;
+                    if (pt) metadata.postText = pt;
                     archive.unshift(metadata);
                     localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
                     await this.syncArchiveToBlueskyIfConnected();
@@ -2198,6 +2288,11 @@ class WikiStorage {
                 habitDays: item.habitDays || [],
                 assignmentType: item.assignmentType || 'albums'
             };
+            if (item.authorHandle) metadata.authorHandle = item.authorHandle;
+            if (item.authorDid) metadata.authorDid = item.authorDid;
+            if (item.authorDisplayName) metadata.authorDisplayName = item.authorDisplayName;
+            const pt = item.postText ?? item.textSnippet;
+            if (pt) metadata.postText = pt;
             archive.unshift(metadata);
             localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
             return item;
@@ -2230,7 +2325,11 @@ class WikiStorage {
                     albumIds: a.albumIds || [],
                     articleIds: a.articleIds || [],
                     habitDays: a.habitDays || [],
-                    assignmentType: a.assignmentType || 'albums'
+                    assignmentType: a.assignmentType || 'albums',
+                    ...(a.authorHandle && { authorHandle: a.authorHandle }),
+                    ...(a.authorDid && { authorDid: a.authorDid }),
+                    ...(a.authorDisplayName && { authorDisplayName: a.authorDisplayName }),
+                    ...((a.postText || a.textSnippet) && { postText: a.postText || a.textSnippet })
                 })),
                 albums,
                 updatedAt: new Date().toISOString()

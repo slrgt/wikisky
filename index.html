@@ -233,6 +233,7 @@
                                         Login with Bluesky
                                     </button>
                                     <button id="disconnect-bluesky" class="btn-secondary" style="width: 100%; margin-top: 0.5em; font-size: 12px; display: none;">Disconnect Bluesky</button>
+                                    <button id="view-pds-data" class="btn-secondary" style="width: 100%; margin-top: 0.5em; font-size: 12px; display: none;">View data on PDS</button>
                                     <button id="select-archive-directory" class="btn-secondary" style="width: 100%; margin-top: 0.5em; font-size: 12px;">Select Archive Folder</button>
                                     <div id="archive-directory-status" style="margin-top: 0.5em; font-size: 11px; color: #72777d; display: none;"></div>
                                     <small style="display: block; margin-top: 0.5em; color: #72777d; font-size: 11px;">Click to configure file storage. You'll be able to choose where files are saved.</small>
@@ -538,6 +539,23 @@
                     <button id="connect-bluesky-btn" class="btn-primary">Continue to Bluesky Login</button>
                     <button id="cancel-bluesky" class="btn-secondary">Cancel</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PDS Data Modal (when logged into Bluesky) -->
+    <div id="pds-data-modal" class="article-modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Data on your PDS</h2>
+                <button class="modal-close" id="pds-data-modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="pds-data-modal-body">
+                <p style="color: #72777d;">Loading…</p>
+            </div>
+            <div class="modal-actions">
+                <a id="pds-data-open-pdsls" href="https://pdsls.dev" target="_blank" rel="noopener" class="btn-primary" style="display: inline-flex; align-items: center; gap: 0.5em; text-decoration: none;">Open in PDSls</a>
+                <button class="btn-secondary" id="pds-data-modal-close-btn">Close</button>
             </div>
         </div>
     </div>
