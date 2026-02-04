@@ -417,7 +417,7 @@ class WikiApp {
                         if (sourceInput) sourceInput.value = '';
                         this.updateMediaPreview();
                         if (items.length > 0) {
-                            this.showUpdateNotification(`Added ${items.length} item(s) from post. Save to add them to your collection.`);
+                            this.showUpdateNotification(`Added ${items.length} item(s) from post. Save to add them to your artboard.`);
                         }
                     } finally {
                         addMediaByUrlBtn.disabled = false;
@@ -1319,7 +1319,7 @@ class WikiApp {
                 const suggestions = [];
                 if (articleKeys.length < 3) suggestions.push('Create more articles to build your knowledge base');
                 if (!this.storage.getBookmarks().length) suggestions.push('Bookmark articles for quick access');
-                if (!this.storage.getArchive().length) suggestions.push('Add images to your collections');
+                if (!this.storage.getArchive().length) suggestions.push('Add images to your artboards');
                 if (!this.storage.getHabits().length) suggestions.push('Set up habits to track daily goals');
                 if (suggestions.length > 0) {
                     suggestionHtml = `<div class="bento-suggestions"><span class="suggestion-label">Try:</span> ${suggestions[0]}</div>`;
@@ -1445,7 +1445,7 @@ class WikiApp {
                                 ${getControlsHTML('collections')}
                             </div>
                             <div class="bento-header">
-                                <h3><svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>Collections</h3>
+                                <h3><svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>Artboards</h3>
                             </div>
                             ${collectionsPreview}
                         </div>
@@ -1550,15 +1550,24 @@ class WikiApp {
                         const name = mediaItem.name || 'Untitled';
                         const truncatedName = name.length > 22 ? name.substring(0, 22) + '...' : name;
                         const mediaHtml = mediaItem.type === 'video'
-                            ? `<video data-media-id="${mediaId}" class="bento-media-content" autoplay muted loop style="background: #f0f0f0;"></video>`
+                            ? `<video data-media-id="${mediaId}" class="bento-media-content" controls playsinline style="background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
                             : `<img data-media-id="${mediaId}" alt="${name}" class="bento-media-content" style="background: #f0f0f0;">`;
                         
-                        // Load image asynchronously
+                        // Load image/video asynchronously
                         setTimeout(() => {
                             this.loadArchiveItemImage(mediaItem).then(imageData => {
-                                if (imageData) {
-                                    const imgElement = document.querySelector(`[data-media-id="${mediaId}"]`);
-                                    if (imgElement) imgElement.src = imageData;
+                                const wrapper = document.querySelector(`.bento-card[data-media-id="${mediaId}"]`);
+                                if (!wrapper) return;
+                                if (mediaItem.type === 'video') {
+                                    const videoEl = wrapper.querySelector('video');
+                                    if (videoEl) {
+                                        const src = mediaItem.videoUrl || imageData;
+                                        if (src) videoEl.src = src;
+                                        if (imageData) videoEl.poster = imageData;
+                                    }
+                                } else {
+                                    const imgEl = wrapper.querySelector('img');
+                                    if (imgEl && imageData) imgEl.src = imageData;
                                 }
                             });
                         }, 100);
@@ -1650,15 +1659,20 @@ class WikiApp {
                             const currentItem = albumItems[randomIndex];
                             const itemId = currentItem.id;
                             imageHtml = currentItem.type === 'video'
-                                ? `<video data-album-item-id="${itemId}" class="bento-album-featured-image" autoplay muted loop style="background: #f0f0f0;"></video>`
+                                ? `<video data-album-item-id="${itemId}" class="bento-album-featured-image" controls playsinline style="background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
                                 : `<img data-album-item-id="${itemId}" alt="${currentItem.name || 'Image'}" class="bento-album-featured-image" style="background: #f0f0f0;">`;
                             
-                            // Load image asynchronously
+                            // Load image/video asynchronously
                             setTimeout(() => {
                                 this.loadArchiveItemImage(currentItem).then(imageData => {
-                                    if (imageData) {
-                                        const imgElement = document.querySelector(`[data-album-item-id="${itemId}"]`);
-                                        if (imgElement) imgElement.src = imageData;
+                                    const el = document.querySelector(`[data-album-item-id="${itemId}"]`);
+                                    if (!el) return;
+                                    if (currentItem.type === 'video') {
+                                        const src = currentItem.videoUrl || imageData;
+                                        if (src) el.src = src;
+                                        if (imageData) el.poster = imageData;
+                                    } else if (imageData) {
+                                        el.src = imageData;
                                     }
                                 });
                             }, 100);
@@ -1758,15 +1772,20 @@ class WikiApp {
                                 randomItem = albumItems[Math.floor(Math.random() * albumItems.length)];
                                 const itemId = randomItem.id;
                                 imageHtml = randomItem.type === 'video'
-                                    ? `<video data-random-album-item-id="${itemId}" class="bento-album-featured-image" autoplay muted loop style="background: #f0f0f0;"></video>`
+                                    ? `<video data-random-album-item-id="${itemId}" class="bento-album-featured-image" controls playsinline style="background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
                                     : `<img data-random-album-item-id="${itemId}" alt="${randomItem.name || 'Image'}" class="bento-album-featured-image" style="background: #f0f0f0;">`;
                                 
-                                // Load image asynchronously
+                                // Load image/video asynchronously
                                 setTimeout(() => {
                                     this.loadArchiveItemImage(randomItem).then(imageData => {
-                                        if (imageData) {
-                                            const imgElement = document.querySelector(`[data-random-album-item-id="${itemId}"]`);
-                                            if (imgElement) imgElement.src = imageData;
+                                        const videoEl = document.querySelector(`[data-random-album-item-id="${itemId}"]`);
+                                        if (!videoEl) return;
+                                        if (randomItem.type === 'video') {
+                                            const src = randomItem.videoUrl || imageData;
+                                            if (src) videoEl.src = src;
+                                            if (imageData) videoEl.poster = imageData;
+                                        } else if (imageData) {
+                                            videoEl.src = imageData;
                                         }
                                     });
                                 }, 100);
@@ -1791,15 +1810,24 @@ class WikiApp {
                             const truncatedName = name.length > 22 ? name.substring(0, 22) + '...' : name;
                             const itemId = randomItem.id;
                             const mediaHtml = randomItem.type === 'video'
-                                ? `<video data-random-media-id="${itemId}" class="bento-media-content" autoplay muted loop style="background: #f0f0f0;"></video>`
+                                ? `<video data-random-media-id="${itemId}" class="bento-media-content" controls playsinline style="background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
                                 : `<img data-random-media-id="${itemId}" alt="${name}" class="bento-media-content" style="background: #f0f0f0;">`;
                             
-                            // Load image asynchronously
+                            // Load image/video asynchronously
                             setTimeout(() => {
                                 this.loadArchiveItemImage(randomItem).then(imageData => {
-                                    if (imageData) {
-                                        const imgElement = document.querySelector(`[data-random-media-id="${itemId}"]`);
-                                        if (imgElement) imgElement.src = imageData;
+                                    const wrapper = document.querySelector(`.bento-card[data-media-id="${randomItem.id}"]`);
+                                    if (!wrapper) return;
+                                    if (randomItem.type === 'video') {
+                                        const videoEl = wrapper.querySelector('video');
+                                        if (videoEl) {
+                                            const src = randomItem.videoUrl || imageData;
+                                            if (src) videoEl.src = src;
+                                            if (imageData) videoEl.poster = imageData;
+                                        }
+                                    } else {
+                                        const imgEl = wrapper.querySelector('img');
+                                        if (imgEl && imageData) imgEl.src = imageData;
                                     }
                                 });
                             }, 100);
@@ -2043,7 +2071,7 @@ class WikiApp {
                     { id: 'welcome', name: 'Home', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>' },
                     { id: 'articles', name: 'Articles', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg>' },
                     { id: 'bookmarks', name: 'Bookmarks', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>' },
-                    { id: 'collections', name: 'Collections', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>' },
+                    { id: 'collections', name: 'Artboards', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>' },
                     { id: 'habits', name: 'Habits', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>' },
                     { id: 'webcomic', name: 'Webcomic', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/></svg>' },
                     { id: 'media', name: 'Image/Video', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>' }
@@ -3219,7 +3247,7 @@ class WikiApp {
     }
 
     clearBrowserStorage() {
-        if (!confirm('Are you sure you want to clear ALL browser storage? This will delete:\n\n• All articles\n• All collections/albums\n• All archive items\n• All bookmarks\n• All habits\n• All drafts\n• All settings\n\nThis cannot be undone!')) {
+        if (!confirm('Are you sure you want to clear ALL browser storage? This will delete:\n\n• All articles\n• All artboards/albums\n• All archive items\n• All bookmarks\n• All habits\n• All drafts\n• All settings\n\nThis cannot be undone!')) {
             return;
         }
         
@@ -4007,7 +4035,7 @@ class WikiApp {
                     type: 'collection',
                     id: album.id,
                     title: album.name,
-                    preview: 'Collection',
+                    preview: 'Artboard',
                     titleMatch: name.includes(trimmedQuery)
                 });
             }
@@ -4051,13 +4079,13 @@ class WikiApp {
                     <div class="search-result-create-icon">+</div>
                     <div class="search-result-create-content">
                         <div class="search-result-title">Create "${createQuery}"</div>
-                        <div class="search-result-preview">Create new article or collection</div>
+                        <div class="search-result-preview">Create new article or artboard</div>
                     </div>
                 </div>
             `;
         } else {
             searchResults.innerHTML = this.searchResults.map((result, index) => {
-                const typeLabel = result.type === 'article' ? 'Article' : result.type === 'collection' ? 'Collection' : 'Habit';
+                const typeLabel = result.type === 'article' ? 'Article' : result.type === 'collection' ? 'Artboard' : 'Habit';
                 let href = '#';
                 if (result.type === 'article') {
                     href = `#${result.key}`;
@@ -4161,7 +4189,7 @@ class WikiApp {
             <div class="search-create-option" data-type="collection">
                 <div class="search-create-icon">📁</div>
                 <div class="search-create-text">
-                    <div class="search-create-title">Create Collection</div>
+                    <div class="search-create-title">Create Artboard</div>
                     <div class="search-create-desc">"${escapedQuery}"</div>
                 </div>
             </div>
@@ -5399,7 +5427,7 @@ ${document.body.innerHTML}
             { id: 'welcome', name: 'Home', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>' },
             { id: 'articles', name: 'Articles', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg>' },
             { id: 'bookmarks', name: 'Bookmarks', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>' },
-            { id: 'collections', name: 'Collections', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>' },
+            { id: 'collections', name: 'Artboards', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>' },
             { id: 'habits', name: 'Habits', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>' },
             { id: 'webcomic', name: 'Webcomic', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/></svg>' },
             { id: 'media', name: 'Image/Video', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>' }
@@ -5513,15 +5541,20 @@ ${document.body.innerHTML}
             const truncatedName = name.length > 22 ? name.substring(0, 22) + '...' : name;
             const itemId = item.id;
             const thumbnail = item.type === 'video'
-                ? `<video data-media-thumb-id="${itemId}" style="width: 40px; height: 40px; object-fit: cover; border-radius: 4px; background: #f0f0f0;"></video>`
+                ? `<video data-media-thumb-id="${itemId}" controls playsinline style="width: 40px; height: 40px; object-fit: cover; border-radius: 4px; background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
                 : `<img data-media-thumb-id="${itemId}" alt="${name}" style="width: 40px; height: 40px; object-fit: cover; border-radius: 4px; background: #f0f0f0;">`;
             
             // Load thumbnail asynchronously
             setTimeout(() => {
                 this.loadArchiveItemImage(item).then(imageData => {
-                    if (imageData) {
-                        const imgElement = document.querySelector(`[data-media-thumb-id="${itemId}"]`);
-                        if (imgElement) imgElement.src = imageData;
+                    const el = document.querySelector(`[data-media-thumb-id="${itemId}"]`);
+                    if (!el) return;
+                    if (item.type === 'video') {
+                        const src = item.videoUrl || imageData;
+                        if (src) el.src = src;
+                        if (imageData) el.poster = imageData;
+                    } else if (imageData) {
+                        el.src = imageData;
                     }
                 });
             }, 100);
@@ -5592,14 +5625,14 @@ ${document.body.innerHTML}
         });
         
         if (availableAlbums.length === 0) {
-            menu.innerHTML = '<div class="bento-add-empty">All collections added</div>';
+            menu.innerHTML = '<div class="bento-add-empty">All artboards added</div>';
             menu.style.display = 'block';
             return;
         }
         
         // If no collections exist at all
         if (albums.length === 0) {
-            menu.innerHTML = '<div class="bento-add-empty">No collections yet. Create one first!</div>';
+            menu.innerHTML = '<div class="bento-add-empty">No artboards yet. Create one first!</div>';
             menu.style.display = 'block';
             return;
         }
@@ -5630,7 +5663,7 @@ ${document.body.innerHTML}
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 14px; height: 14px;"><polyline points="15 18 9 12 15 6"></polyline></svg>
                     <span>Back</span>
                 </button>
-                <input type="text" id="collection-search-input" placeholder="Search collections..." style="flex: 1; min-width: 150px; padding: 0.5em; border: 1px solid #eaecf0; border-radius: 4px; font-size: 14px;" oninput="window.wikiApp.filterCollectionSelection(this.value)">
+                <input type="text" id="collection-search-input" placeholder="Search artboards..." style="flex: 1; min-width: 150px; padding: 0.5em; border: 1px solid #eaecf0; border-radius: 4px; font-size: 14px;" oninput="window.wikiApp.filterCollectionSelection(this.value)">
                 <button class="bento-add-option" onclick="window.wikiApp.addBento('random:collections', event)" style="justify-content: center; flex: 0 0 auto; background: #f0f7ff; color: #0645ad; font-weight: 500;">
                     <span>Random</span>
                 </button>
@@ -6540,9 +6573,9 @@ ${document.body.innerHTML}
                 <div class="bulk-assignment-section" style="margin-bottom: 1.5em; padding: 1em; background: #f8f9fa; border-radius: 8px; border: 1px solid #eaecf0;">
                     <div style="font-weight: bold; margin-bottom: 0.5em; color: #0645ad;">Assign to All Images (${this.pendingMediaFiles.length} files):</div>
                     <div class="media-preview-albums-list">
-                        ${collections.length > 0 ? bulkCollectionCheckboxes : '<span class="no-albums-text">No collections yet</span>'}
+                        ${collections.length > 0 ? bulkCollectionCheckboxes : '<span class="no-albums-text">No artboards yet</span>'}
                     </div>
-                    <button class="btn-small media-new-album-btn" onclick="window.wikiApp.createCollectionAndAddToAll()" style="margin-top:0.5em;">+ New Collection</button>
+                    <button class="btn-small media-new-album-btn" onclick="window.wikiApp.createCollectionAndAddToAll()" style="margin-top:0.5em;">+ New Artboard</button>
                 </div>
             `;
         }
@@ -6598,7 +6631,7 @@ ${document.body.innerHTML}
             
             const assignmentTypeSelect = `
                 <select onchange="window.wikiApp.setImageAssignmentType(${i}, this.value)" class="media-assignment-type-select">
-                    <option value="albums" ${assignmentType === 'albums' ? 'selected' : ''}>Collections</option>
+                    <option value="albums" ${assignmentType === 'albums' ? 'selected' : ''}>Artboards</option>
                     <option value="articles" ${assignmentType === 'articles' ? 'selected' : ''}>Articles</option>
                     <option value="habit-days" ${assignmentType === 'habit-days' ? 'selected' : ''}>Habit Days</option>
                 </select>
@@ -6607,11 +6640,11 @@ ${document.body.innerHTML}
             let assignmentContent = '';
             if (assignmentType === 'albums') {
                 assignmentContent = `
-                    <div class="media-preview-albums-label">Collections:</div>
+                    <div class="media-preview-albums-label">Artboards:</div>
                     <div class="media-preview-albums-list">
-                        ${collections.length > 0 ? collectionCheckboxes : '<span class="no-albums-text">No collections yet</span>'}
+                        ${collections.length > 0 ? collectionCheckboxes : '<span class="no-albums-text">No artboards yet</span>'}
                     </div>
-                    <button class="btn-small media-new-album-btn" onclick="window.wikiApp.createCollectionAndAddToImage(${i})" style="margin-top:0.5em;">+ New Collection</button>
+                    <button class="btn-small media-new-album-btn" onclick="window.wikiApp.createCollectionAndAddToImage(${i})" style="margin-top:0.5em;">+ New Artboard</button>
                 `;
             } else if (assignmentType === 'articles') {
                 assignmentContent = `
@@ -6688,7 +6721,7 @@ ${document.body.innerHTML}
     }
     
     createCollectionAndAddToAll() {
-        const name = prompt('Collection name:');
+        const name = prompt('Artboard name:');
         if (name && name.trim()) {
             const collection = this.storage.saveAlbum({ name: name.trim() });
             // Add to all files
@@ -6703,7 +6736,7 @@ ${document.body.innerHTML}
     }
     
     createCollectionAndAddToImage(imageIndex) {
-        const name = prompt('Collection name:');
+        const name = prompt('Artboard name:');
         if (name && name.trim()) {
             const collection = this.storage.saveAlbum({ name: name.trim() });
             const file = this.pendingMediaFiles[imageIndex];
@@ -6901,7 +6934,7 @@ ${document.body.innerHTML}
     }
 
     createAlbum() {
-        const name = prompt('Collection name:');
+        const name = prompt('Artboard name:');
         if (name && name.trim()) {
             this.storage.saveAlbum({ name: name.trim() });
             this.updateAlbumSelect();
@@ -6916,7 +6949,7 @@ ${document.body.innerHTML}
         const album = albums.find(a => a.id === albumId);
         if (!album) return;
         
-        if (confirm(`Are you sure you want to delete the collection "${album.name}"? This will remove the collection but keep all media items.`)) {
+        if (confirm(`Are you sure you want to delete the artboard "${album.name}"? This will remove the artboard but keep all media items.`)) {
             this.storage.deleteAlbum(albumId);
             this.updateAlbumSelect();
             // Refresh archive page if on it
@@ -6929,7 +6962,7 @@ ${document.body.innerHTML}
     }
     
     createAlbumAndAddToImage(imageIndex) {
-        const name = prompt('Collection name:');
+        const name = prompt('Artboard name:');
         if (name && name.trim()) {
             const album = this.storage.saveAlbum({ name: name.trim() });
             const file = this.pendingMediaFiles[imageIndex];
@@ -6956,8 +6989,8 @@ ${document.body.innerHTML}
         const isLoggedIn = this.storage.storageMode === 'bluesky' && this.storage.blueskyClient?.accessJwt;
         const browseTitle = isLoggedIn ? 'Your Bluesky feed' : 'Browse AT Protocol';
         const browseDesc = isLoggedIn
-            ? 'Images and videos from your feed. Add any to your collections.'
-            : 'Discover images and videos from the Bluesky feed. Add any to your collections.';
+            ? 'Images and videos from your feed. Add any to your artboards.'
+            : 'Discover images and videos from the Bluesky feed. Add any to your artboards.';
         container.innerHTML = `
             <div class="browse-page-header">
                 <h1>${browseTitle}</h1>
@@ -7052,14 +7085,14 @@ ${document.body.innerHTML}
         };
         try {
             const saved = await this.storage.saveArchiveItem(archiveItem);
-            this.showUpdateNotification('Added to your archive. Assign it to a collection from Collections.');
+            this.showUpdateNotification('Added to your archive. Assign it to an artboard from Artboards.');
             if (albums.length > 0 && saved) {
-                const chosen = prompt(`Add to a collection? Enter name (or leave blank): ${albums.map(a => a.name).join(', ')}`);
+                const chosen = prompt(`Add to an artboard? Enter name (or leave blank): ${albums.map(a => a.name).join(', ')}`);
                 if (chosen && chosen.trim()) {
                     const album = albums.find(a => a.name.toLowerCase() === chosen.trim().toLowerCase());
                     if (album && saved.id) {
                         this.storage.updateArchiveItem(saved.id, { albumIds: [album.id] });
-                        this.showUpdateNotification(`Added to collection "${album.name}"`);
+                        this.showUpdateNotification(`Added to artboard "${album.name}"`);
                     }
                 }
             }
@@ -7109,7 +7142,7 @@ ${document.body.innerHTML}
                     </div>
                 `;
                 }).join('')}
-                ${!this.collectionEditMode ? `<button class="album-pill add-album" onclick="window.wikiApp.createAlbum()">+ New Collection</button>` : ''}
+                ${!this.collectionEditMode ? `<button class="album-pill add-album" onclick="window.wikiApp.createAlbum()">+ New Artboard</button>` : ''}
             </div>
         ` : '';
         
@@ -7154,7 +7187,7 @@ ${document.body.innerHTML}
         container.innerHTML = `
             ${this.renderSectionNav()}
             <div class="article-header">
-                <h1>${currentAlbum ? currentAlbum.name : 'Collections'}</h1>
+                <h1>${currentAlbum ? currentAlbum.name : 'Artboards'}</h1>
                 <div class="article-header-upload-wrapper">
                     <button class="btn-primary archive-upload-btn" onclick="window.wikiApp.openCreateModal('media')" style="display: inline-flex; align-items: center;">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:0.5em;">
@@ -7251,7 +7284,7 @@ ${document.body.innerHTML}
                         <div class="album-checkboxes" id="edit-archive-albums">
                             ${albums.length > 0 ? albumCheckboxes : '<span class="no-albums">No albums yet</span>'}
                         </div>
-                        <button class="btn-small" onclick="window.wikiApp.createAlbumFromLightbox()" style="margin-top:0.5em;">+ New Collection</button>
+                        <button class="btn-small" onclick="window.wikiApp.createAlbumFromLightbox()" style="margin-top:0.5em;">+ New Artboard</button>
                     </div>
                     <div class="form-row">
                         <label>Tags</label>
@@ -7271,7 +7304,7 @@ ${document.body.innerHTML}
     }
 
     createAlbumFromLightbox() {
-        const name = prompt('Collection name:');
+        const name = prompt('Artboard name:');
         if (name && name.trim()) {
             const album = this.storage.saveAlbum({ name: name.trim() });
             // Add new checkbox
@@ -7502,24 +7535,29 @@ ${document.body.innerHTML}
                 const itemId = randomItem ? randomItem.id : null;
                 const thumbnail = randomItem 
                     ? (randomItem.type === 'video'
-                        ? `<video data-album-thumb-id="${itemId}" class="bento-album-thumb" style="background: #f0f0f0;"></video>`
+                        ? `<video data-album-thumb-id="${itemId}" class="bento-album-thumb" controls playsinline style="background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
                         : `<img data-album-thumb-id="${itemId}" alt="${album.name}" class="bento-album-thumb" style="background: #f0f0f0;">`)
                     : `<div class="bento-album-thumb bento-album-placeholder"></div>`;
                 
-                // Load thumbnail image asynchronously
+                // Load thumbnail asynchronously
                 if (randomItem) {
                     setTimeout(() => {
                         this.loadArchiveItemImage(randomItem).then(imageData => {
-                            if (imageData) {
-                                const imgElement = document.querySelector(`[data-album-thumb-id="${itemId}"]`);
-                                if (imgElement) imgElement.src = imageData;
+                            const el = document.querySelector(`[data-album-thumb-id="${itemId}"]`);
+                            if (!el) return;
+                            if (randomItem.type === 'video') {
+                                const src = randomItem.videoUrl || imageData;
+                                if (src) el.src = src;
+                                if (imageData) el.poster = imageData;
+                            } else if (imageData) {
+                                el.src = imageData;
                             }
                         });
                     }, 100);
                 }
                 
                 return `
-                    <div class="bento-album-item" draggable="true" data-album-id="${album.id}" data-album-name="${album.name}" onclick="event.stopPropagation(); window.wikiApp.filterCollectionByAlbum('${album.id}');" title="Click to view collection">
+                    <div class="bento-album-item" draggable="true" data-album-id="${album.id}" data-album-name="${album.name}" onclick="event.stopPropagation(); window.wikiApp.filterCollectionByAlbum('${album.id}');" title="Click to view artboard">
                         ${thumbnail}
                         <div class="bento-album-info">
                             <span class="bento-album-name">${album.name}</span>
@@ -7531,7 +7569,7 @@ ${document.body.innerHTML}
             // Add empty placeholder slots to always show the required total
             const emptySlotsNeeded = Math.max(0, totalSlots - albums.length);
             const emptySlotsHtml = Array(emptySlotsNeeded).fill(null).map(() => `
-                    <div class="bento-album-item bento-album-empty" style="opacity: 0.3; cursor: pointer;" onclick="event.stopPropagation(); window.wikiApp.openCreateModal('media');" title="Click to create a new collection">
+                    <div class="bento-album-item bento-album-empty" style="opacity: 0.3; cursor: pointer;" onclick="event.stopPropagation(); window.wikiApp.openCreateModal('media');" title="Click to create a new artboard">
                         <div class="bento-album-thumb bento-album-placeholder"></div>
                         <div class="bento-album-info">
                             <span class="bento-album-name" style="color: #72777d;">Empty</span>
@@ -7551,7 +7589,7 @@ ${document.body.innerHTML}
             return `
             <div class="archive-thumb">
                 ${item.type === 'video'
-                    ? `<video data-capture-thumb-id="${itemId}" style="background: #f0f0f0;"></video>`
+                    ? `<video data-capture-thumb-id="${itemId}" controls playsinline style="background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
                     : `<img data-capture-thumb-id="${itemId}" alt="${item.name || 'Image'}" style="background: #f0f0f0;">`}
             </div>
         `;
@@ -7561,15 +7599,20 @@ ${document.body.innerHTML}
         setTimeout(() => {
             items.forEach(item => {
                 this.loadArchiveItemImage(item).then(imageData => {
-                    if (imageData) {
-                        const imgElement = document.querySelector(`[data-capture-thumb-id="${item.id}"]`);
-                        if (imgElement) imgElement.src = imageData;
+                    const el = document.querySelector(`[data-capture-thumb-id="${item.id}"]`);
+                    if (!el) return;
+                    if (item.type === 'video') {
+                        const src = item.videoUrl || imageData;
+                        if (src) el.src = src;
+                        if (imageData) el.poster = imageData;
+                    } else if (imageData) {
+                        el.src = imageData;
                     }
                 });
             });
         }, 100);
         
-        return `<div class="captures-section"><h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="section-icon-sm"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>Collections</h2><div class="archive-thumb-row">${html}</div><a href="#collection" data-route="collection" style="display:block;margin-top:0.5em;font-size:13px;">View All</a></div>`;
+        return `<div class="captures-section"><h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="section-icon-sm"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>Artboards</h2><div class="archive-thumb-row">${html}</div><a href="#collection" data-route="collection" style="display:block;margin-top:0.5em;font-size:13px;">View All</a></div>`;
     }
 
     // ===== AUTO-SAVE & DRAFTS =====

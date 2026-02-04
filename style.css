@@ -4193,7 +4193,7 @@ h3:hover .section-actions {
     padding-top: 3em;
 }
 
-/* Collections bento defaults to 3 columns and square, but can be resized */
+/* Artboards bento defaults to 3 columns and square, but can be resized */
 .bento-card[data-section="collections"].bento-size-2,
 .bento-card[data-section="collections"].bento-size-3 {
     aspect-ratio: 1 / 1;
