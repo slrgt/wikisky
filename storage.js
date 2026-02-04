@@ -28,6 +28,7 @@ class WikiStorage {
         
         try {
             await this.loadBlueskyConnection();
+            // When logged into Bluesky, artboards (archive + albums) load from PDS so they sync across devices
             if (this.storageMode === 'bluesky' && this.blueskyClient) {
                 await this.loadArchiveFromBluesky();
             }
@@ -658,26 +659,28 @@ class WikiStorage {
     // Get articles from Bluesky PDS (site.standard.document lexicon, same as standard.site / pckt.blog)
     async getAllArticlesFromBluesky() {
         try {
-            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.listRecords?repo=${this.blueskyClient.did}&collection=site.standard.document`);
-
-            if (!response.ok) {
-                return {};
-            }
-
-            const data = await response.json();
             const articles = {};
-            if (data.records) {
-                data.records.forEach(record => {
-                    const val = record.value;
-                    const path = val?.path || record.rkey;
-                    if (path) {
-                        articles[path] = {
-                            title: val.title || '',
-                            content: val.content || ''
-                        };
-                    }
-                });
-            }
+            let cursor = undefined;
+            do {
+                let url = `https://bsky.social/xrpc/com.atproto.repo.listRecords?repo=${this.blueskyClient.did}&collection=site.standard.document&limit=100`;
+                if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+                const response = await this._pdsFetch(url);
+                if (!response.ok) return Object.keys(articles).length ? articles : {};
+                const data = await response.json();
+                if (data.records) {
+                    data.records.forEach(record => {
+                        const val = record.value;
+                        const path = val?.path || record.rkey;
+                        if (path) {
+                            articles[path] = {
+                                title: val.title || '',
+                                content: val.content || ''
+                            };
+                        }
+                    });
+                }
+                cursor = data.cursor || null;
+            } while (cursor);
             return articles;
         } catch (error) {
             console.error('Error fetching from Bluesky:', error);
@@ -2270,6 +2273,7 @@ class WikiStorage {
         
         const filtered = archive.filter(a => a.id !== id);
         localStorage.setItem('xoxowiki-archive', JSON.stringify(filtered));
+        await this.syncArchiveToBlueskyIfConnected();
     }
 
     updateArchiveItem(id, updates) {
@@ -2278,6 +2282,7 @@ class WikiStorage {
         if (idx !== -1) {
             archive[idx] = { ...archive[idx], ...updates };
             localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+            this.syncArchiveToBlueskyIfConnected().catch(() => {});
         }
     }
 
@@ -2303,6 +2308,7 @@ class WikiStorage {
         album.createdAt = new Date().toISOString();
         albums.push(album);
         localStorage.setItem('xoxowiki-albums', JSON.stringify(albums));
+        this.syncArchiveToBlueskyIfConnected().catch(() => {});
         return album;
     }
 
@@ -2322,6 +2328,7 @@ class WikiStorage {
             return a;
         });
         localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+        this.syncArchiveToBlueskyIfConnected().catch(() => {});
     }
 
     // ===== SECTION ORDER =====

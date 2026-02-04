@@ -2333,7 +2333,8 @@ class WikiApp {
                 commentTextarea.addEventListener('keydown', (e) => {
                     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                         e.preventDefault();
-                        this.addComment(key);
+                        // Pass value from the focused field so we don't read stale/empty DOM
+                        this.addComment(key, null, e.target.value);
                     }
                 });
             }
@@ -4275,19 +4276,21 @@ class WikiApp {
         return comments.map(comment => renderComment(comment)).join('');
     }
 
-    addComment(articleKey, parentId = null) {
-        // Try to get the textarea - could be main comment form or reply form
-        let textArea = document.getElementById('new-comment-text');
-        if (!textArea && parentId) {
-            textArea = document.getElementById(`reply-text-${parentId}`);
+    addComment(articleKey, parentId = null, optionalCommentText = undefined) {
+        // Prefer text passed from caller (e.g. Cmd+Enter) to avoid stale/wrong element
+        let commentText = typeof optionalCommentText === 'string' ? optionalCommentText.trim() : undefined;
+        if (commentText === undefined) {
+            let textArea = document.getElementById('new-comment-text');
+            if (!textArea && parentId) {
+                textArea = document.getElementById(`reply-text-${parentId}`);
+            }
+            commentText = textArea ? textArea.value.trim() : '';
         }
-        
-        const commentText = textArea ? textArea.value.trim() : '';
-        
         if (!commentText) {
             alert('Please enter a comment');
             return;
         }
+        const textArea = document.getElementById('new-comment-text') || (parentId ? document.getElementById(`reply-text-${parentId}`) : null);
         
         // Use Anonymous as author (no name field)
         const comment = this.storage.addComment(articleKey, commentText, 'Anonymous', parentId);
@@ -4346,7 +4349,7 @@ class WikiApp {
                         replyTextarea.addEventListener('keydown', (e) => {
                             if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                                 e.preventDefault();
-                                this.addReply(articleKey, parentId);
+                                this.addReply(articleKey, parentId, e.target.value);
                             }
                         });
                     }
@@ -4366,7 +4369,7 @@ class WikiApp {
                     newTextarea.addEventListener('keydown', (e) => {
                         if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                             e.preventDefault();
-                            this.addReply(articleKey, parentId);
+                            this.addReply(articleKey, parentId, e.target.value);
                         }
                     });
                 }
@@ -4374,18 +4377,16 @@ class WikiApp {
         }
     }
 
-    addReply(articleKey, parentId) {
+    addReply(articleKey, parentId, optionalReplyText = undefined) {
+        const replyText = typeof optionalReplyText === 'string' ? optionalReplyText.trim() : undefined;
         const textArea = document.getElementById(`reply-text-${parentId}`);
-        const replyText = textArea ? textArea.value.trim() : '';
-        
-        if (!replyText) {
+        const resolvedText = replyText !== undefined ? replyText : (textArea ? textArea.value.trim() : '');
+        if (!resolvedText) {
             alert('Please enter a reply');
             return;
         }
-        
         // Use Anonymous as author for replies (no name field)
-        const comment = this.storage.addComment(articleKey, replyText, 'Anonymous', parentId);
-        
+        const comment = this.storage.addComment(articleKey, resolvedText, 'Anonymous', parentId);
         // Clear reply form
         if (textArea) textArea.value = '';
         
@@ -7151,12 +7152,13 @@ ${document.body.innerHTML}
             return `
             <div class="archive-page-item ${this.collectionEditMode ? 'collection-item-selectable' : ''} ${isSelected ? 'collection-item-selected' : ''}" data-item-id="${item.id}" onclick="${this.collectionEditMode ? `window.wikiApp.toggleCollectionItemSelection('${item.id}')` : `window.wikiApp.viewArchiveItemPage('${item.id}')`}">
                 ${this.collectionEditMode ? `<div class="collection-item-checkbox"><input type="checkbox" data-item-id="${item.id}" ${isSelected ? 'checked' : ''} onchange="window.wikiApp.toggleCollectionItemSelection('${item.id}')" onclick="event.stopPropagation()"></div>` : ''}
-                ${item.type === 'video' 
-                    ? `<video data-item-id="${item.id}" controls playsinline style="background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
-                    : `<img data-item-id="${item.id}" alt="${item.name || 'Image'}" style="background: #f0f0f0;">`}
-                <div class="archive-item-overlay">
-                    ${item.source ? `<a href="${item.source}" target="_blank" onclick="event.stopPropagation()" class="source-icon">src</a>` : ''}
+                <div class="archive-page-item-media">
+                    ${item.type === 'video' 
+                        ? `<video data-item-id="${item.id}" controls playsinline style="background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
+                        : `<img data-item-id="${item.id}" alt="${item.name || 'Image'}" style="background: #f0f0f0;">`}
+                    <div class="archive-item-overlay"></div>
                 </div>
+                ${item.source ? `<div class="archive-item-source" onclick="event.stopPropagation()"><a href="${this.escapeHtml(item.source)}" target="_blank" rel="noopener">${this.escapeHtml(item.source.length > 50 ? item.source.slice(0, 47) + '…' : item.source)}</a></div>` : ''}
             </div>
         `;
         }).join('') : '<p class="archive-empty">No items yet. Click the + button to add media!</p>';

@@ -1929,16 +1929,23 @@ h3:hover .section-actions {
     background-color: white;
     border: 1px solid #a7d7f9;
     border-radius: 2px;
+    max-height: 300px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }
 
 #article-content-editor .ql-container {
     font-family: inherit;
     font-size: 14px;
-    min-height: 350px;
+    min-height: 120px;
+    max-height: 250px;
+    overflow-y: auto;
+    flex: 1;
 }
 
 #article-content-editor .ql-editor {
-    min-height: 350px;
+    min-height: 120px;
 }
 
 #article-content-editor .ql-toolbar {
@@ -2025,6 +2032,14 @@ h3:hover .section-actions {
     padding: 0.75em 1em;
     border-top: 1px solid #eaecf0;
     flex-shrink: 0;
+    position: relative;
+    z-index: 1;
+    background: #fff;
+    cursor: default;
+}
+
+.modal-actions button {
+    cursor: pointer;
 }
 
 .btn-primary,
@@ -3828,11 +3843,35 @@ h3:hover .section-actions {
     background: #f8f9fa;
 }
 
+.archive-page-item-media {
+    position: relative;
+}
+
 .archive-page-item img,
 .archive-page-item video {
     width: 100%;
     height: auto;
     display: block;
+}
+
+.archive-item-source {
+    padding: 0.35em 0.5em 0.5em;
+    font-size: 0.75rem;
+    line-height: 1.3;
+    background: #f0f4f8;
+    border-top: 1px solid #e5e9ed;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.archive-item-source a {
+    color: #0645ad;
+    text-decoration: none;
+}
+
+.archive-item-source a:hover {
+    text-decoration: underline;
 }
 
 .archive-page-item:hover {
