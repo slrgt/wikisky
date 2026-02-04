@@ -6769,6 +6769,51 @@ ${document.body.innerHTML}
     async saveMediaItems() {
         console.log('saveMediaItems called', { fileCount: this.pendingMediaFiles.length });
         try {
+            // If nothing added yet but URL field has text, act as if Add was clicked
+            if (this.pendingMediaFiles.length === 0) {
+                const mediaImageUrlInput = document.getElementById('media-image-url');
+                const url = mediaImageUrlInput?.value?.trim() || '';
+                if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+                    if (this.storage._parseBskyPostUrl(url)) {
+                        const { items, error } = await this.storage.fetchPostMediaFromUrl(url);
+                        if (error) {
+                            alert(error);
+                            return;
+                        }
+                        const sourceInput = document.getElementById('media-source');
+                        if (sourceInput && !sourceInput.value.trim()) sourceInput.value = url;
+                        for (const it of items) {
+                            this.pendingMediaFiles.push({
+                                data: null,
+                                imageUrl: it.imageUrl,
+                                videoUrl: it.videoUrl || null,
+                                name: it.name || (it.type === 'video' ? 'Video from post' : 'Image from post'),
+                                type: it.type || 'image',
+                                albumIds: [],
+                                assignmentType: 'albums',
+                                articleIds: [],
+                                habitDays: [],
+                                source: it.source || url
+                            });
+                        }
+                        if (mediaImageUrlInput) mediaImageUrlInput.value = '';
+                        this.updateMediaPreview();
+                    } else {
+                        this.pendingMediaFiles.push({
+                            data: null,
+                            imageUrl: url,
+                            name: 'Image from URL',
+                            type: 'image',
+                            albumIds: [],
+                            assignmentType: 'albums',
+                            articleIds: [],
+                            habitDays: []
+                        });
+                        if (mediaImageUrlInput) mediaImageUrlInput.value = '';
+                        this.updateMediaPreview();
+                    }
+                }
+            }
             if (this.pendingMediaFiles.length === 0) {
                 alert('Please add at least one image or video (or paste an image URL).');
                 return;
@@ -6860,6 +6905,10 @@ ${document.body.innerHTML}
             this.pendingMediaFiles = [];
             this.updateMediaPreview();
             this.closeModal();
+            // Refresh collection page so new uploads are visible
+            if (this.currentArticleKey === 'collection') {
+                this.showCollectionPage();
+            }
         } catch (error) {
             console.error('Error in saveMediaItems:', error);
             alert('An error occurred while saving. Check console for details.');
