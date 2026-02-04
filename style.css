@@ -172,6 +172,27 @@ body {
     height: 18px;
 }
 
+/* Header Upload button - to the left of Bluesky */
+.header-upload-btn {
+    background: none;
+    border: 1px solid #a2a9b1;
+    outline: none;
+    cursor: pointer;
+    padding: 0.35em 0.6em;
+    font-size: 13px;
+    border-radius: 4px;
+    color: #0645ad;
+    transition: background-color 0.2s, border-color 0.2s;
+}
+.header-upload-btn:hover {
+    background-color: #f0f7ff;
+    border-color: #0645ad;
+    color: #0b0080;
+}
+.header-upload-btn:focus {
+    outline: none;
+}
+
 /* Bluesky handle autocomplete */
 .bluesky-handle-group {
     position: relative;

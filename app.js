@@ -2364,8 +2364,19 @@ class WikiApp {
         if (articleKeys.length === 0) {
             container.innerHTML = `
                 ${this.renderSectionNav()}
-                <h1>All Articles</h1>
-                <p>No articles yet. Click "New Article" or highlight some text and click "Create Article" to get started!</p>
+                <div class="article-header">
+                    <h1>All Articles</h1>
+                    <div class="article-header-upload-wrapper">
+                        <button class="btn-primary" onclick="window.wikiApp.openCreateModal('article')" style="display: inline-flex; align-items: center;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:0.5em;">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                            New Article
+                        </button>
+                    </div>
+                </div>
+                <p>No articles yet. Click "New Article" above or highlight some text and click "Create Article" to get started!</p>
             `;
             document.title = 'All Articles - XoxoWiki';
             // Show Home Page button when not on homepage

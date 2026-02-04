@@ -1810,14 +1810,21 @@ class WikiStorage {
         const items = [];
         const text = (postView.record?.text || '').slice(0, 100);
         if (embed) {
+            // App View returns images in view format: { thumb: url, fullsize: url, alt } (URI strings)
             const imagesList = embed.images && Array.isArray(embed.images) ? embed.images : (embed.media && embed.media.images && Array.isArray(embed.media.images) ? embed.media.images : null);
             if (imagesList) {
                 for (let i = 0; i < imagesList.length; i++) {
                     const img = imagesList[i];
-                    const ref = img?.image?.ref || img?.ref;
-                    const cid = ref?.$link || ref;
-                    if (!cid) continue;
-                    const imageUrl = this.getAtProtocolBlobUrl(cid, didAuthor);
+                    let imageUrl = null;
+                    if (typeof img?.fullsize === 'string' && img.fullsize.startsWith('http')) {
+                        imageUrl = img.fullsize;
+                    } else if (typeof img?.thumb === 'string' && img.thumb.startsWith('http')) {
+                        imageUrl = img.thumb;
+                    } else {
+                        const ref = img?.image?.ref || img?.ref;
+                        const cid = ref?.$link || ref;
+                        if (cid) imageUrl = this.getAtProtocolBlobUrl(cid, didAuthor);
+                    }
                     if (imageUrl) {
                         items.push({
                             type: 'image',
@@ -1830,14 +1837,39 @@ class WikiStorage {
                     }
                 }
             }
-            if (embed.media && embed.media.image) {
-                const ref = embed.media.image.ref || embed.media.image;
+            // Video: App View uses playlist (video URL) + thumbnail (poster URL); or legacy blob refs
+            const media = embed.media;
+            if (media) {
+                const playlistUrl = typeof media.playlist === 'string' && media.playlist.startsWith('http') ? media.playlist : null;
+                const thumbUrl = typeof media.thumbnail === 'string' && media.thumbnail.startsWith('http') ? media.thumbnail : null;
+                const ref = media.image?.ref || media.image;
                 const cid = ref?.$link || ref;
-                if (cid) {
-                    const videoUrl = this.getAtProtocolBlobUrl(cid, didAuthor);
-                    const thumbRef = embed.media.thumbnail && (embed.media.thumbnail.ref || embed.media.thumbnail);
-                    const imageUrl = thumbRef ? this.getAtProtocolBlobUrl(thumbRef.$link || thumbRef, didAuthor) : videoUrl;
-                    if (videoUrl) {
+                const videoUrlFromRef = cid ? this.getAtProtocolBlobUrl(cid, didAuthor) : null;
+                const finalVideoUrl = playlistUrl || videoUrlFromRef;
+                if (finalVideoUrl) {
+                    let imageUrl = thumbUrl || null;
+                    if (!imageUrl && media.thumbnail && typeof media.thumbnail === 'object') {
+                        const tr = media.thumbnail?.ref || media.thumbnail;
+                        const tc = tr?.$link || tr;
+                        if (tc) imageUrl = this.getAtProtocolBlobUrl(tc, didAuthor);
+                    }
+                    if (!imageUrl && cid) imageUrl = this.getAtProtocolBlobUrl(cid, didAuthor);
+                    items.push({
+                        type: 'video',
+                        imageUrl: imageUrl || finalVideoUrl,
+                        videoUrl: finalVideoUrl,
+                        name: `Video from @${handleDisplay}`,
+                        source: sourceUrl,
+                        textSnippet: text,
+                        alt: media.alt || ''
+                    });
+                } else if (media.image && !finalVideoUrl) {
+                    const ref2 = media.image.ref || media.image;
+                    const cid2 = ref2?.$link || ref2;
+                    if (cid2) {
+                        const videoUrl = this.getAtProtocolBlobUrl(cid2, didAuthor);
+                        const thumbRef = media.thumbnail && (media.thumbnail.ref || media.thumbnail);
+                        const imageUrl = thumbRef ? this.getAtProtocolBlobUrl(thumbRef.$link || thumbRef, didAuthor) : videoUrl;
                         items.push({
                             type: 'video',
                             imageUrl,
