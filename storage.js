@@ -1677,7 +1677,7 @@ class WikiStorage {
     }
 
     async getFileFromDisk(filename) {
-        // Check if File System Access API is available
+        // Try disk first if user previously selected an archive folder
         if ('showDirectoryPicker' in window && this.archiveDirectoryHandle) {
             try {
                 const archiveDirHandle = await this.archiveDirectoryHandle.getDirectoryHandle('archive');
@@ -1685,55 +1685,48 @@ class WikiStorage {
                 const file = await fileHandle.getFile();
                 return file;
             } catch (error) {
-                console.error('Error reading file from disk:', error);
-                return null;
+                // File not on disk (e.g. uploads stored only in IndexedDB) – fall through to IndexedDB
             }
-        } else {
-            // Fallback: get from IndexedDB
-            try {
-                const blob = await this.getFileFromIndexedDB(filename);
-                if (blob) {
-                    // Convert blob to File-like object
-                    return new File([blob], filename, { type: blob.type });
-                }
-                return null;
-            } catch (error) {
-                console.error('Error reading file from IndexedDB:', error);
-                return null;
+        }
+        // Use IndexedDB (uploads are stored here only – no download or disk copy)
+        try {
+            const blob = await this.getFileFromIndexedDB(filename);
+            if (blob) {
+                return new File([blob], filename, { type: blob.type });
             }
+            return null;
+        } catch (error) {
+            console.error('Error reading file from IndexedDB:', error);
+            return null;
         }
     }
 
     async deleteFileFromDisk(filename) {
-        // Check if File System Access API is available
         if ('showDirectoryPicker' in window && this.archiveDirectoryHandle) {
             try {
                 const archiveDirHandle = await this.archiveDirectoryHandle.getDirectoryHandle('archive');
                 await archiveDirHandle.removeEntry(filename);
                 return true;
             } catch (error) {
-                console.error('Error deleting file from disk:', error);
-                return false;
+                // File may exist only in IndexedDB (uploads) – fall through
             }
-        } else {
-            // Fallback: delete from IndexedDB
-            try {
-                const request = indexedDB.open('xoxowiki-files', 1);
-                return new Promise((resolve) => {
-                    request.onsuccess = () => {
-                        const db = request.result;
-                        const transaction = db.transaction(['files'], 'readwrite');
-                        const store = transaction.objectStore('files');
-                        const deleteRequest = store.delete(filename);
-                        deleteRequest.onsuccess = () => resolve(true);
-                        deleteRequest.onerror = () => resolve(false);
-                    };
-                    request.onerror = () => resolve(false);
-                });
-            } catch (error) {
-                console.error('Error deleting file from IndexedDB:', error);
-                return false;
-            }
+        }
+        try {
+            const request = indexedDB.open('xoxowiki-files', 1);
+            return new Promise((resolve) => {
+                request.onsuccess = () => {
+                    const db = request.result;
+                    const transaction = db.transaction(['files'], 'readwrite');
+                    const store = transaction.objectStore('files');
+                    const deleteRequest = store.delete(filename);
+                    deleteRequest.onsuccess = () => resolve(true);
+                    deleteRequest.onerror = () => resolve(false);
+                };
+                request.onerror = () => resolve(false);
+            });
+        } catch (error) {
+            console.error('Error deleting file from IndexedDB:', error);
+            return false;
         }
     }
 
@@ -2158,12 +2151,13 @@ class WikiStorage {
                 }
             }
             
-            // Option C: Local file (disk or IndexedDB) when not using AT Protocol
+            // Option C: Store in IndexedDB only (no disk write, no download) when not using AT Protocol
             let extension = 'bin';
+            let mimeType = 'application/octet-stream';
             if (item.imageData.startsWith('data:')) {
-                const match = item.imageData.match(/data:([^;]+);/);
+                const match = item.imageData.match(/data:([^;]+);base64,(.+)/);
                 if (match) {
-                    const mimeType = match[1];
+                    mimeType = match[1];
                     if (mimeType.includes('jpeg') || mimeType.includes('jpg')) extension = 'jpg';
                     else if (mimeType.includes('png')) extension = 'png';
                     else if (mimeType.includes('gif')) extension = 'gif';
@@ -2172,7 +2166,17 @@ class WikiStorage {
                 }
             }
             const filename = `${item.id}.${extension}`;
-            await this.saveFileToDisk(filename, item.imageData, true);
+            let blob;
+            if (item.imageData.startsWith('data:')) {
+                const base64Data = item.imageData.split(',')[1] || item.imageData;
+                const binaryString = atob(base64Data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+                blob = new Blob([bytes], { type: mimeType });
+            } else {
+                blob = new Blob([item.imageData]);
+            }
+            await this.storeFileInIndexedDB(filename, blob);
             item.filename = filename;
             
             const archive = this.getArchive();

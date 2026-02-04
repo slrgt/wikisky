@@ -6819,32 +6819,7 @@ ${document.body.innerHTML}
                 return;
             }
             
-            const hasLocalFiles = this.pendingMediaFiles.some(f => f.data && !f.imageUrl);
-            // Only prompt for directory when we have local file data to save
-            if (hasLocalFiles && 'showDirectoryPicker' in window && !this.storage.archiveDirectoryHandle) {
-                try {
-                    // Try to automatically get directory access
-                    // For file:// URLs, this will try to get the current directory
-                    const granted = await this.storage.requestCurrentDirectory();
-                    if (!granted) {
-                        // Fall back to standard directory picker
-                        await this.storage.requestArchiveDirectory();
-                    }
-                    
-                    if (this.storage.archiveDirectoryHandle) {
-                        const statusEl = document.getElementById('archive-directory-status');
-                        if (statusEl) {
-                            statusEl.textContent = '✓ Archive folder selected';
-                            statusEl.style.display = 'block';
-                            statusEl.style.color = '#00af89';
-                        }
-                    }
-                } catch (error) {
-                    console.error('Error getting directory access:', error);
-                    // Continue anyway - will use IndexedDB fallback
-                }
-            }
-            
+            // Uploads are stored in IndexedDB only (no disk write, no download)
             const source = document.getElementById('media-source')?.value?.trim() || '';
             let savedCount = 0;
             let errorCount = 0;
@@ -6904,6 +6879,11 @@ ${document.body.innerHTML}
             
             this.pendingMediaFiles = [];
             this.updateMediaPreview();
+            // Clear Media tab form so next upload doesn't inherit source/URL
+            const mediaSourceInput = document.getElementById('media-source');
+            const mediaImageUrlInput = document.getElementById('media-image-url');
+            if (mediaSourceInput) mediaSourceInput.value = '';
+            if (mediaImageUrlInput) mediaImageUrlInput.value = '';
             this.closeModal();
             // Always show collection page so new uploads are visible
             this.navigate('collection');
