@@ -91,10 +91,10 @@ class WikiApp {
         return `<span class="pds-sync-cloud" title="Synced to Bluesky PDS" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg></span>`;
     }
 
-    /** Label under artboard media: poster username or "Source" / "View details". Full URL is only in the edit window. */
+    /** Label under artboard media: show @handle (domain) as source name, not display name. Full URL is only in the edit window. */
     getArchiveItemMetaLabel(item) {
         if (item.authorHandle) return this.escapeHtml(`@${item.authorHandle}`);
-        if (item.name && item.name !== 'From feed' && item.name.length < 40) return this.escapeHtml(item.name);
+        if (item.authorDid) return this.escapeHtml(`@${item.authorDid}`);
         if (item.source) return 'Source';
         return 'View details';
     }
@@ -7348,7 +7348,7 @@ ${document.body.innerHTML}
         const postText = (item.postText || item.textSnippet || '').trim();
         const hasAuthor = !!(item.authorHandle || item.authorDid);
         const profileHref = item.source || (item.authorHandle ? `https://bsky.app/profile/${item.authorHandle}` : (item.authorDid ? `https://bsky.app/profile/${item.authorDid}` : ''));
-        const authorLabel = item.authorDisplayName ? `${this.escapeHtml(item.authorDisplayName)} (@${this.escapeHtml(item.authorHandle || item.authorDid || '')})` : (item.authorHandle || item.authorDid ? `@${this.escapeHtml(item.authorHandle || item.authorDid)}` : '');
+        const authorLabel = (item.authorHandle || item.authorDid) ? `@${this.escapeHtml(item.authorHandle || item.authorDid)}` : '';
         const postAndAuthorBlock = (postText || hasAuthor) ? `
                     <div class="archive-lightbox-post-author">
                         ${hasAuthor ? `<div class="archive-lightbox-author">Posted by ${profileHref ? `<a href="${this.escapeHtml(profileHref)}" target="_blank" rel="noopener">${authorLabel}</a>` : authorLabel}</div>` : ''}
