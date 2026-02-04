@@ -6905,10 +6905,8 @@ ${document.body.innerHTML}
             this.pendingMediaFiles = [];
             this.updateMediaPreview();
             this.closeModal();
-            // Refresh collection page so new uploads are visible
-            if (this.currentArticleKey === 'collection') {
-                this.showCollectionPage();
-            }
+            // Always show collection page so new uploads are visible
+            this.navigate('collection');
         } catch (error) {
             console.error('Error in saveMediaItems:', error);
             alert('An error occurred while saving. Check console for details.');
@@ -7159,7 +7157,8 @@ ${document.body.innerHTML}
                     if (item.type === 'video') {
                         const videoEl = wrapper.querySelector('video');
                         if (videoEl) {
-                            if (item.videoUrl) videoEl.src = item.videoUrl;
+                            const src = item.videoUrl || imageData;
+                            if (src) videoEl.src = src;
                             if (imageData) videoEl.poster = imageData;
                         }
                     } else {
@@ -7248,8 +7247,9 @@ ${document.body.innerHTML}
             </label>
         `).join('');
         
-        // Load image data
+        // Load image/video URL (poster or image data)
         const imageData = await this.loadArchiveItemImage(item);
+        const videoSrc = item.type === 'video' ? (item.videoUrl || imageData) : '';
         
         // Editable lightbox view
         const overlay = document.createElement('div');
@@ -7259,7 +7259,7 @@ ${document.body.innerHTML}
             <div class="archive-lightbox-content">
                 <button class="lightbox-close" onclick="document.getElementById('archive-lightbox').remove()">&times;</button>
                 ${item.type === 'video' 
-                    ? `<video src="${imageData || ''}" controls autoplay></video>`
+                    ? `<video src="${videoSrc || ''}" ${imageData ? `poster="${imageData}"` : ''} controls autoplay></video>`
                     : `<img src="${imageData || ''}" alt="${item.name || 'Image'}">`}
                 <div class="archive-lightbox-form">
                     <div class="form-row">

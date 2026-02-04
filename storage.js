@@ -1837,9 +1837,32 @@ class WikiStorage {
                     }
                 }
             }
-            // Video: App View uses playlist (video URL) + thumbnail (poster URL); or legacy blob refs
+            // Video: can be embed.media (recordWithMedia) or direct embed (video#view: embed.playlist)
             const media = embed.media;
-            if (media) {
+            const directPlaylist = typeof embed.playlist === 'string' && embed.playlist.startsWith('http') ? embed.playlist : null;
+            const directThumb = typeof embed.thumbnail === 'string' && embed.thumbnail.startsWith('http') ? embed.thumbnail : null;
+            const directCid = embed.cid;
+            const videoFromDirect = directPlaylist || (directCid ? this.getAtProtocolBlobUrl(directCid, didAuthor) : null);
+
+            if (videoFromDirect) {
+                const thumbUrl = directThumb || null;
+                let imageUrl = thumbUrl;
+                if (!imageUrl && embed.thumbnail && typeof embed.thumbnail === 'object') {
+                    const tr = embed.thumbnail?.ref || embed.thumbnail;
+                    const tc = tr?.$link || tr;
+                    if (tc) imageUrl = this.getAtProtocolBlobUrl(tc, didAuthor);
+                }
+                if (!imageUrl && directCid) imageUrl = this.getAtProtocolBlobUrl(directCid, didAuthor);
+                items.push({
+                    type: 'video',
+                    imageUrl: imageUrl || videoFromDirect,
+                    videoUrl: videoFromDirect,
+                    name: `Video from @${handleDisplay}`,
+                    source: sourceUrl,
+                    textSnippet: text,
+                    alt: embed.alt || ''
+                });
+            } else if (media) {
                 const playlistUrl = typeof media.playlist === 'string' && media.playlist.startsWith('http') ? media.playlist : null;
                 const thumbUrl = typeof media.thumbnail === 'string' && media.thumbnail.startsWith('http') ? media.thumbnail : null;
                 const ref = media.image?.ref || media.image;
@@ -1863,7 +1886,7 @@ class WikiStorage {
                         textSnippet: text,
                         alt: media.alt || ''
                     });
-                } else if (media.image && !finalVideoUrl) {
+                } else if (media.image) {
                     const ref2 = media.image.ref || media.image;
                     const cid2 = ref2?.$link || ref2;
                     if (cid2) {
@@ -2112,11 +2135,12 @@ class WikiStorage {
                 }
                 if (blob) {
                     const blobResult = await this.uploadBlobToAtProtocol(blob, mimeType);
+                    const blobUrl = this.getAtProtocolBlobUrl(blobResult.ref?.$link || blobResult.ref, this.blueskyClient.did);
                     const archive = this.getArchive();
                     const metadata = {
                         id: item.id,
                         name: item.name,
-                        type: item.type,
+                        type: item.type || 'image',
                         source: item.source,
                         createdAt: item.createdAt,
                         atBlobRef: blobResult.ref,
@@ -2126,6 +2150,7 @@ class WikiStorage {
                         habitDays: item.habitDays || [],
                         assignmentType: item.assignmentType || 'albums'
                     };
+                    if (item.type === 'video' && blobUrl) metadata.videoUrl = blobUrl;
                     archive.unshift(metadata);
                     localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
                     await this.syncArchiveToBlueskyIfConnected();
