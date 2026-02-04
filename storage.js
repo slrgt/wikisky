@@ -1835,7 +1835,9 @@ class WikiStorage {
             const directPlaylist = typeof embed.playlist === 'string' && embed.playlist.startsWith('http') ? embed.playlist : null;
             const directThumb = typeof embed.thumbnail === 'string' && embed.thumbnail.startsWith('http') ? embed.thumbnail : null;
             const directCid = embed.cid;
-            const videoFromDirect = directPlaylist || (directCid ? this.getAtProtocolBlobUrl(directCid, didAuthor) : null);
+            // Prefer blob URL over playlist: playlist is often HLS (.m3u8) which only Safari plays natively; blob URL returns raw MP4 for all browsers
+            const directBlobUrl = directCid ? this.getAtProtocolBlobUrl(directCid, didAuthor) : null;
+            const videoFromDirect = directBlobUrl || directPlaylist;
 
             if (videoFromDirect) {
                 const thumbUrl = directThumb || null;
@@ -1861,7 +1863,8 @@ class WikiStorage {
                 const ref = media.image?.ref || media.image;
                 const cid = ref?.$link || ref;
                 const videoUrlFromRef = cid ? this.getAtProtocolBlobUrl(cid, didAuthor) : null;
-                const finalVideoUrl = playlistUrl || videoUrlFromRef;
+                // Prefer blob URL over playlist so we get raw MP4 (playlist is often HLS, which Chrome/Firefox don't play in <video>)
+                const finalVideoUrl = videoUrlFromRef || playlistUrl;
                 if (finalVideoUrl) {
                     let imageUrl = thumbUrl || null;
                     if (!imageUrl && media.thumbnail && typeof media.thumbnail === 'object') {
