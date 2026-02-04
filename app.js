@@ -398,8 +398,6 @@ class WikiApp {
                             alert(error);
                             return;
                         }
-                        const sourceInput = document.getElementById('media-source');
-                        if (sourceInput && !sourceInput.value.trim()) sourceInput.value = url;
                         for (const it of items) {
                             this.pendingMediaFiles.push({
                                 data: null,
@@ -415,6 +413,8 @@ class WikiApp {
                             });
                         }
                         mediaImageUrlInput.value = '';
+                        const sourceInput = document.getElementById('media-source');
+                        if (sourceInput) sourceInput.value = '';
                         this.updateMediaPreview();
                         if (items.length > 0) {
                             this.showUpdateNotification(`Added ${items.length} item(s) from post. Save to add them to your collection.`);
@@ -6780,8 +6780,6 @@ ${document.body.innerHTML}
                             alert(error);
                             return;
                         }
-                        const sourceInput = document.getElementById('media-source');
-                        if (sourceInput && !sourceInput.value.trim()) sourceInput.value = url;
                         for (const it of items) {
                             this.pendingMediaFiles.push({
                                 data: null,
@@ -6797,6 +6795,8 @@ ${document.body.innerHTML}
                             });
                         }
                         if (mediaImageUrlInput) mediaImageUrlInput.value = '';
+                        const sourceInput = document.getElementById('media-source');
+                        if (sourceInput) sourceInput.value = '';
                         this.updateMediaPreview();
                     } else {
                         this.pendingMediaFiles.push({
@@ -7119,7 +7119,7 @@ ${document.body.innerHTML}
             <div class="archive-page-item ${this.collectionEditMode ? 'collection-item-selectable' : ''} ${isSelected ? 'collection-item-selected' : ''}" data-item-id="${item.id}" onclick="${this.collectionEditMode ? `window.wikiApp.toggleCollectionItemSelection('${item.id}')` : `window.wikiApp.viewArchiveItemPage('${item.id}')`}">
                 ${this.collectionEditMode ? `<div class="collection-item-checkbox"><input type="checkbox" data-item-id="${item.id}" ${isSelected ? 'checked' : ''} onchange="window.wikiApp.toggleCollectionItemSelection('${item.id}')" onclick="event.stopPropagation()"></div>` : ''}
                 ${item.type === 'video' 
-                    ? `<video data-item-id="${item.id}" style="background: #f0f0f0;"></video>`
+                    ? `<video data-item-id="${item.id}" controls playsinline style="background: #f0f0f0;" onclick="event.stopPropagation()"></video>`
                     : `<img data-item-id="${item.id}" alt="${item.name || 'Image'}" style="background: #f0f0f0;">`}
                 <div class="archive-item-overlay">
                     ${item.source ? `<a href="${item.source}" target="_blank" onclick="event.stopPropagation()" class="source-icon">src</a>` : ''}
