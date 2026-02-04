@@ -1767,6 +1767,94 @@ class WikiStorage {
         return `https://bsky.social/xrpc/com.atproto.sync.getBlob?did=${encodeURIComponent(repoDid)}&cid=${encodeURIComponent(cidOnly)}`;
     }
 
+    // Parse a bsky.app post URL to get handle and rkey. Returns null if not a valid post URL.
+    _parseBskyPostUrl(url) {
+        if (!url || typeof url !== 'string') return null;
+        const trimmed = url.trim();
+        // https://bsky.app/profile/handle/post/rkey or https://bsky.app/profile/handle.bsky.social/post/rkey
+        const m = trimmed.match(/bsky\.app\/profile\/([^/]+)\/post\/([^/?#]+)/i);
+        if (!m) return null;
+        return { handle: m[1], rkey: m[2], url: trimmed };
+    }
+
+    // Fetch a single post by bsky.app URL and return archive-ready items (images/videos with imageUrl, source).
+    async fetchPostMediaFromUrl(bskyAppUrl) {
+        const parsed = this._parseBskyPostUrl(bskyAppUrl);
+        if (!parsed) return { items: [], error: 'Not a valid Bluesky post URL (e.g. https://bsky.app/profile/handle.bsky.social/post/...)' };
+        const { handle, rkey, url: sourceUrl } = parsed;
+        let did;
+        try {
+            const res = await fetch(`https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(handle)}`);
+            if (!res.ok) throw new Error('Could not resolve handle');
+            const data = await res.json();
+            did = data.did;
+        } catch (e) {
+            return { items: [], error: 'Could not resolve Bluesky handle: ' + (e.message || 'Unknown error') };
+        }
+        const atUri = `at://${did}/app.bsky.feed.post/${rkey}`;
+        let posts;
+        try {
+            const res = await fetch(`https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts?uris=${encodeURIComponent(atUri)}`);
+            if (!res.ok) throw new Error('Failed to load post');
+            const data = await res.json();
+            posts = data.posts || [];
+        } catch (e) {
+            return { items: [], error: 'Could not load post: ' + (e.message || 'Unknown error') };
+        }
+        const postView = posts[0];
+        if (!postView) return { items: [], error: 'Post not found or unavailable' };
+        const author = postView.author || {};
+        const didAuthor = author.did || did;
+        const handleDisplay = author.displayName || author.handle || handle;
+        const embed = postView.embed;
+        const items = [];
+        const text = (postView.record?.text || '').slice(0, 100);
+        if (embed) {
+            const imagesList = embed.images && Array.isArray(embed.images) ? embed.images : (embed.media && embed.media.images && Array.isArray(embed.media.images) ? embed.media.images : null);
+            if (imagesList) {
+                for (let i = 0; i < imagesList.length; i++) {
+                    const img = imagesList[i];
+                    const ref = img?.image?.ref || img?.ref;
+                    const cid = ref?.$link || ref;
+                    if (!cid) continue;
+                    const imageUrl = this.getAtProtocolBlobUrl(cid, didAuthor);
+                    if (imageUrl) {
+                        items.push({
+                            type: 'image',
+                            imageUrl,
+                            name: imagesList.length > 1 ? `Image ${i + 1} from @${handleDisplay}` : `Image from @${handleDisplay}`,
+                            source: sourceUrl,
+                            textSnippet: text,
+                            alt: img.alt || ''
+                        });
+                    }
+                }
+            }
+            if (embed.media && embed.media.image) {
+                const ref = embed.media.image.ref || embed.media.image;
+                const cid = ref?.$link || ref;
+                if (cid) {
+                    const videoUrl = this.getAtProtocolBlobUrl(cid, didAuthor);
+                    const thumbRef = embed.media.thumbnail && (embed.media.thumbnail.ref || embed.media.thumbnail);
+                    const imageUrl = thumbRef ? this.getAtProtocolBlobUrl(thumbRef.$link || thumbRef, didAuthor) : videoUrl;
+                    if (videoUrl) {
+                        items.push({
+                            type: 'video',
+                            imageUrl,
+                            videoUrl,
+                            name: `Video from @${handleDisplay}`,
+                            source: sourceUrl,
+                            textSnippet: text,
+                            alt: ''
+                        });
+                    }
+                }
+            }
+        }
+        if (items.length === 0) return { items: [], error: 'No images or videos found in this post' };
+        return { items };
+    }
+
     // Parse feed array (getFeed or getTimeline response) into browse items with images/videos
     _parseFeedToBrowseItems(feed) {
         const items = [];
@@ -1969,6 +2057,7 @@ class WikiStorage {
                     habitDays: item.habitDays || [],
                     assignmentType: item.assignmentType || 'albums'
                 };
+                if (item.videoUrl) metadata.videoUrl = item.videoUrl;
                 archive.unshift(metadata);
                 localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
                 await this.syncArchiveToBlueskyIfConnected();
@@ -2068,6 +2157,7 @@ class WikiStorage {
                     source: a.source,
                     createdAt: a.createdAt,
                     imageUrl: a.imageUrl || null,
+                    videoUrl: a.videoUrl || null,
                     atBlobRef: a.atBlobRef || null,
                     atBlobRefDid: a.atBlobRefDid || null,
                     albumIds: a.albumIds || [],

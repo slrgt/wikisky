@@ -378,16 +378,54 @@ class WikiApp {
         const addMediaByUrlBtn = document.getElementById('add-media-by-url');
         const mediaImageUrlInput = document.getElementById('media-image-url');
         if (addMediaByUrlBtn && mediaImageUrlInput) {
-            addMediaByUrlBtn.addEventListener('click', () => {
+            addMediaByUrlBtn.addEventListener('click', async () => {
                 const url = mediaImageUrlInput.value.trim();
                 if (!url) {
-                    alert('Please enter an image URL.');
+                    alert('Please enter an image URL or a Bluesky post URL.');
                     return;
                 }
                 if (!url.startsWith('http://') && !url.startsWith('https://')) {
                     alert('Please enter a valid http or https URL.');
                     return;
                 }
+                // Bluesky post URL: fetch post and add all images/videos to pending
+                if (this.storage._parseBskyPostUrl(url)) {
+                    addMediaByUrlBtn.disabled = true;
+                    addMediaByUrlBtn.textContent = 'Loading…';
+                    try {
+                        const { items, error } = await this.storage.fetchPostMediaFromUrl(url);
+                        if (error) {
+                            alert(error);
+                            return;
+                        }
+                        const sourceInput = document.getElementById('media-source');
+                        if (sourceInput && !sourceInput.value.trim()) sourceInput.value = url;
+                        for (const it of items) {
+                            this.pendingMediaFiles.push({
+                                data: null,
+                                imageUrl: it.imageUrl,
+                                videoUrl: it.videoUrl || null,
+                                name: it.name || (it.type === 'video' ? 'Video from post' : 'Image from post'),
+                                type: it.type || 'image',
+                                albumIds: [],
+                                assignmentType: 'albums',
+                                articleIds: [],
+                                habitDays: [],
+                                source: it.source || url
+                            });
+                        }
+                        mediaImageUrlInput.value = '';
+                        this.updateMediaPreview();
+                        if (items.length > 0) {
+                            this.showUpdateNotification(`Added ${items.length} item(s) from post. Save to add them to your collection.`);
+                        }
+                    } finally {
+                        addMediaByUrlBtn.disabled = false;
+                        addMediaByUrlBtn.textContent = 'Add';
+                    }
+                    return;
+                }
+                // Single image/URL
                 this.pendingMediaFiles.push({
                     data: null,
                     imageUrl: url,
@@ -6585,7 +6623,7 @@ ${document.body.innerHTML}
                 <div class="media-preview-item">
                     <div class="archive-preview-item">
                         ${f.type === 'video' 
-                            ? `<video src="${f.data || f.imageUrl || ''}" style="width:100%;height:100%;object-fit:cover;"></video>`
+                            ? `<video src="${f.data || f.videoUrl || f.imageUrl || ''}" ${f.videoUrl && f.imageUrl ? `poster="${f.imageUrl}"` : ''} style="width:100%;height:100%;object-fit:cover;"></video>`
                             : `<img src="${f.data || f.imageUrl || ''}" alt="${f.name}" onerror="this.style.display='none'">`}
                         <button class="remove-btn" onclick="window.wikiApp.removeMediaFile(${i})">×</button>
                     </div>
@@ -6763,7 +6801,7 @@ ${document.body.innerHTML}
                     const item = {
                         name: f.name,
                         type: f.type,
-                        source,
+                        source: f.source || source,
                         assignmentType
                     };
                     if (f.imageUrl) {
@@ -6771,6 +6809,7 @@ ${document.body.innerHTML}
                     } else {
                         item.imageData = f.data;
                     }
+                    if (f.videoUrl) item.videoUrl = f.videoUrl;
                     if (assignmentType === 'albums') {
                         item.albumIds = f.albumIds || [];
                     } else if (assignmentType === 'articles') {
@@ -7051,15 +7090,21 @@ ${document.body.innerHTML}
         `;
         }).join('') : '<p class="archive-empty">No items yet. Click the + button to add media!</p>';
         
-        // Load images asynchronously after rendering
+        // Load images/videos asynchronously after rendering
         setTimeout(() => {
             items.forEach(item => {
                 this.loadArchiveItemImage(item).then(imageData => {
-                    if (imageData) {
-                        const imgElement = document.querySelector(`[data-item-id="${item.id}"] img, [data-item-id="${item.id}"] video`);
-                        if (imgElement) {
-                            imgElement.src = imageData;
+                    const wrapper = document.querySelector(`.archive-page-item[data-item-id="${item.id}"]`);
+                    if (!wrapper) return;
+                    if (item.type === 'video') {
+                        const videoEl = wrapper.querySelector('video');
+                        if (videoEl) {
+                            if (item.videoUrl) videoEl.src = item.videoUrl;
+                            if (imageData) videoEl.poster = imageData;
                         }
+                    } else {
+                        const imgEl = wrapper.querySelector('img');
+                        if (imgEl && imageData) imgEl.src = imageData;
                     }
                 }).catch(error => {
                     console.error('Failed to load image for item', item.id, error);
