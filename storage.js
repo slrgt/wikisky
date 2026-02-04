@@ -2311,26 +2311,37 @@ class WikiStorage {
             await this.ensureValidToken();
             const archive = this.getArchive();
             const albums = this.getAlbums();
+            const POST_TEXT_MAX = 2000;
             const payload = {
-                archive: archive.map(a => ({
-                    id: a.id,
-                    name: a.name,
-                    type: a.type,
-                    source: a.source,
-                    createdAt: a.createdAt,
-                    imageUrl: a.imageUrl || null,
-                    videoUrl: a.videoUrl || null,
-                    atBlobRef: a.atBlobRef || null,
-                    atBlobRefDid: a.atBlobRefDid || null,
-                    albumIds: a.albumIds || [],
-                    articleIds: a.articleIds || [],
-                    habitDays: a.habitDays || [],
-                    assignmentType: a.assignmentType || 'albums',
-                    ...(a.authorHandle && { authorHandle: a.authorHandle }),
-                    ...(a.authorDid && { authorDid: a.authorDid }),
-                    ...(a.authorDisplayName && { authorDisplayName: a.authorDisplayName }),
-                    ...((a.postText || a.textSnippet) && { postText: a.postText || a.textSnippet })
-                })),
+                archive: archive.map(a => {
+                    const rawPostText = a.postText || a.textSnippet || '';
+                    const postText = typeof rawPostText === 'string' && rawPostText.length > POST_TEXT_MAX
+                        ? rawPostText.slice(0, POST_TEXT_MAX) + '…'
+                        : rawPostText || undefined;
+                    const blobRef = a.atBlobRef;
+                    const atBlobRef = blobRef == null ? null : (typeof blobRef === 'object' && blobRef !== null && (blobRef.$link || blobRef.cid))
+                        ? { $link: blobRef.$link || blobRef.cid }
+                        : (typeof blobRef === 'string' ? { $link: blobRef } : null);
+                    return {
+                        id: a.id,
+                        name: a.name,
+                        type: a.type,
+                        source: a.source || null,
+                        createdAt: a.createdAt,
+                        imageUrl: (a.imageUrl && typeof a.imageUrl === 'string' && a.imageUrl.startsWith('http')) ? a.imageUrl : null,
+                        videoUrl: (a.videoUrl && typeof a.videoUrl === 'string' && a.videoUrl.startsWith('http')) ? a.videoUrl : null,
+                        atBlobRef,
+                        atBlobRefDid: a.atBlobRefDid || null,
+                        albumIds: Array.isArray(a.albumIds) ? a.albumIds : [],
+                        articleIds: Array.isArray(a.articleIds) ? a.articleIds : [],
+                        habitDays: Array.isArray(a.habitDays) ? a.habitDays : [],
+                        assignmentType: a.assignmentType || 'albums',
+                        ...(a.authorHandle && { authorHandle: a.authorHandle }),
+                        ...(a.authorDid && { authorDid: a.authorDid }),
+                        ...(a.authorDisplayName && { authorDisplayName: a.authorDisplayName }),
+                        ...(postText && { postText })
+                    };
+                }),
                 albums,
                 updatedAt: new Date().toISOString()
             };
@@ -2344,17 +2355,25 @@ class WikiStorage {
             const getRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
             const body = { repo: this.blueskyClient.did, collection: 'com.atproto.repo.record', rkey: 'xoxowiki-archive', record };
             if (getRes.ok) {
-                await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.putRecord', {
+                const putRes = await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.putRecord', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
+                if (!putRes.ok) {
+                    const err = await putRes.json().catch(() => ({}));
+                    throw new Error(err.message || err.error || `putRecord ${putRes.status}`);
+                }
             } else {
-                await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
+                const createRes = await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
+                if (!createRes.ok) {
+                    const err = await createRes.json().catch(() => ({}));
+                    throw new Error(err.message || err.error || `createRecord ${createRes.status}`);
+                }
             }
         } catch (e) {
             console.warn('Sync archive to Bluesky failed:', e);
