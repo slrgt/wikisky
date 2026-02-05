@@ -626,6 +626,13 @@
             <div class="modal-body">
                 <p class="browse-add-desc">Select which artboard(s) to add this to:</p>
                 <div id="browse-add-artboard-list" class="browse-add-artboard-list"></div>
+                <div id="browse-add-new-artboard-wrap" class="browse-add-new-artboard-wrap" style="display: none;">
+                    <label for="browse-add-new-artboard-name">New artboard name</label>
+                    <div class="browse-add-new-artboard-row">
+                        <input type="text" id="browse-add-new-artboard-name" placeholder="e.g. My Board">
+                        <button type="button" id="browse-add-create-artboard-btn" class="btn-primary">Create artboard</button>
+                    </div>
+                </div>
                 <div class="form-group" style="margin-top: 1em;">
                     <label for="browse-add-note">Note (optional)</label>
                     <textarea id="browse-add-note" placeholder="Add a note..." rows="2"></textarea>

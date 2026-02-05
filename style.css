@@ -4078,6 +4078,33 @@ h3:hover .section-actions {
     width: 18px;
     height: 18px;
 }
+.browse-add-new-artboard-wrap {
+    margin-top: 0.75em;
+    padding: 0.75em;
+    background: #f0f4f8;
+    border-radius: 8px;
+}
+.browse-add-new-artboard-wrap label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 0.35em;
+    font-size: 0.9rem;
+}
+.browse-add-new-artboard-row {
+    display: flex;
+    gap: 0.5em;
+    align-items: center;
+}
+.browse-add-new-artboard-row input {
+    flex: 1;
+    padding: 0.5em;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 0.9rem;
+}
+.browse-add-new-artboard-row button {
+    flex-shrink: 0;
+}
 
 .collection-item-selectable {
     cursor: pointer;

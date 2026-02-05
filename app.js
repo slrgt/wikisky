@@ -7235,17 +7235,53 @@ ${document.body.innerHTML}
         const modal = document.getElementById('browse-add-modal');
         const listEl = document.getElementById('browse-add-artboard-list');
         const noteEl = document.getElementById('browse-add-note');
+        const newArtboardWrap = document.getElementById('browse-add-new-artboard-wrap');
+        const newArtboardNameInput = document.getElementById('browse-add-new-artboard-name');
+        const createArtboardBtn = document.getElementById('browse-add-create-artboard-btn');
         if (!modal || !listEl || !noteEl) return;
-        const albums = this.storage.getAlbums();
-        listEl.innerHTML = albums.length === 0
-            ? '<p class="browse-add-desc">No artboards yet. Create one from the Artboards page first.</p>'
-            : albums.map(a => `
-                <label>
-                    <input type="checkbox" name="browse-add-artboard" value="${this.escapeHtml(a.id)}">
-                    <span>${this.escapeHtml(a.name)}</span>
-                </label>
-            `).join('');
+
+        const refreshArtboardList = (checkNewAlbumId = null) => {
+            const albums = this.storage.getAlbums();
+            if (albums.length === 0) {
+                listEl.innerHTML = '<p class="browse-add-desc">No artboards yet. Create one below.</p>';
+                if (newArtboardWrap) {
+                    newArtboardWrap.style.display = 'block';
+                    const label = newArtboardWrap.querySelector('label');
+                    if (label) label.textContent = 'New artboard name';
+                }
+            } else {
+                listEl.innerHTML = albums.map(a => `
+                    <label>
+                        <input type="checkbox" name="browse-add-artboard" value="${this.escapeHtml(a.id)}" ${checkNewAlbumId === a.id ? 'checked' : ''}>
+                        <span>${this.escapeHtml(a.name)}</span>
+                    </label>
+                `).join('');
+                if (newArtboardWrap) {
+                    newArtboardWrap.style.display = 'block';
+                    const label = newArtboardWrap.querySelector('label');
+                    if (label) label.textContent = 'Or create another artboard:';
+                }
+            }
+        };
+
+        refreshArtboardList();
         noteEl.value = '';
+        if (newArtboardNameInput) newArtboardNameInput.value = '';
+
+        if (createArtboardBtn && newArtboardNameInput) {
+            createArtboardBtn.onclick = () => {
+                const name = newArtboardNameInput.value.trim();
+                if (!name) {
+                    alert('Please enter an artboard name.');
+                    return;
+                }
+                const album = this.storage.saveAlbum({ name });
+                newArtboardNameInput.value = '';
+                refreshArtboardList(album.id);
+                this.showUpdateNotification(`Created "${album.name}". It's selected—click Add to add this item to it.`);
+            };
+        }
+
         modal.style.display = 'flex';
         const submitBtn = document.getElementById('browse-add-submit-btn');
         submitBtn.onclick = async () => {
