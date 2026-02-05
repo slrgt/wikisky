@@ -4,7 +4,7 @@
   "client_uri": "https://slrgt.github.io/wikisky/",
   "application_type": "web",
   "grant_types": ["authorization_code", "refresh_token"],
-  "scope": "atproto repo:site.standard.document repo:com.atproto.repo.record transition:generic rpc:app.bsky.feed.getTimeline?aud=did:web:api.bsky.app#bsky_appview",
+  "scope": "atproto repo:site.standard.document repo:com.atproto.repo.record transition:generic rpc:app.bsky.feed.getTimeline?aud=did:web:api.bsky.app#bsky_appview repo:app.wikisky.artboard?action=delete repo:app.wikisky.artboardAlbum?action=delete",
   "response_types": ["code"],
   "redirect_uris": ["https://slrgt.github.io/wikisky/"],
   "token_endpoint_auth_method": "none",
