@@ -574,7 +574,9 @@ class WikiStorage {
         if (res.status === 401) {
             const err = await res.json().catch(() => ({}));
             nonce = res.headers.get('dpop-nonce') || res.headers.get('DPoP-Nonce') || '';
-            if (err.error === 'use_dpop_nonce' && nonce) {
+            const errorMsg = (err.error_description || err.error || '').toLowerCase();
+            // Handle nonce-related errors: clear stale nonce and retry with fresh one from server
+            if ((err.error === 'use_dpop_nonce' || errorMsg.includes('nonce')) && nonce) {
                 localStorage.setItem('bluesky-dpop-nonce', nonce);
                 dpopProof = await this._buildDpopProof('POST', tokenEndpoint, nonce, privateKey, publicKeyJwk);
                 res = await fetch(tokenEndpoint, {
@@ -586,6 +588,24 @@ class WikiStorage {
                         client_id: clientId
                     }).toString()
                 });
+            } else if (errorMsg.includes('nonce')) {
+                // If nonce mismatch but no new nonce provided, clear stored nonce and retry once
+                localStorage.removeItem('bluesky-dpop-nonce');
+                dpopProof = await this._buildDpopProof('POST', tokenEndpoint, undefined, privateKey, publicKeyJwk);
+                res = await fetch(tokenEndpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'DPoP': dpopProof },
+                    body: new URLSearchParams({
+                        grant_type: 'refresh_token',
+                        refresh_token: session.refreshJwt,
+                        client_id: clientId
+                    }).toString()
+                });
+                // Get nonce from response if provided
+                const retryNonce = res.headers.get('dpop-nonce') || res.headers.get('DPoP-Nonce');
+                if (retryNonce) {
+                    localStorage.setItem('bluesky-dpop-nonce', retryNonce);
+                }
             }
         }
         if (!res.ok) {
