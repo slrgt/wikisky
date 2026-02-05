@@ -1358,6 +1358,7 @@ class WikiStorage {
                 body: JSON.stringify({
                     repo: this.blueskyClient.did,
                     collection: 'site.standard.document',
+                    rkey,
                     record: recordData
                 })
             });
@@ -1408,36 +1409,61 @@ class WikiStorage {
 
         const rkey = this._toValidArticleRkey(key);
         const baseUrl = this._pdsBaseForRepo();
-        const body = {
-            repo: this.blueskyClient.did,
-            collection: 'site.standard.document',
-            rkey
-        };
         const deleteUrl = `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.deleteRecord`;
 
-        // Delete the record - if it returns success (2xx), deletion is accepted
-        const res = await this._pdsFetch(deleteUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        });
+        const doDelete = (rkeyToDelete) => {
+            return this._pdsFetch(deleteUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    repo: this.blueskyClient.did,
+                    collection: 'site.standard.document',
+                    rkey: rkeyToDelete
+                })
+            });
+        };
+
+        // First try delete with our slug (works when createRecord was called with rkey)
+        let res = await doDelete(rkey);
 
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             const msg = err.message || err.error || '';
             const errCode = err.error || '';
             const isRecordNotFound = res.status === 404 || errCode === 'RecordNotFound' || (typeof msg === 'string' && /RecordNotFound|record not found/i.test(msg) && res.status >= 400 && res.status < 500);
+
             if (isRecordNotFound) {
-                // Already deleted, that's fine
+                // Record not found by slug – may have been created with auto rkey (before we passed rkey to createRecord).
+                // List records and find one whose path matches our slug, then delete by actual rkey.
+                let cursor;
+                do {
+                    let listUrl = `${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.listRecords?repo=${this.blueskyClient.did}&collection=site.standard.document&limit=100`;
+                    if (cursor) listUrl += `&cursor=${encodeURIComponent(cursor)}`;
+                    const listRes = await this._pdsFetch(listUrl);
+                    if (!listRes.ok) break;
+                    const listData = await listRes.json();
+                    if (!listData.records) break;
+                    const match = listData.records.find((rec) => (rec.value && rec.value.path === rkey) || rec.rkey === rkey);
+                    if (match) {
+                        const actualRkey = match.rkey || (match.value && match.value.path);
+                        if (actualRkey) {
+                            res = await doDelete(actualRkey);
+                            if (res.ok) return;
+                            const err2 = await res.json().catch(() => ({}));
+                            throw new Error(err2.message || err2.error || `Delete failed for rkey: ${actualRkey}`);
+                        }
+                    }
+                    cursor = listData.cursor || null;
+                } while (cursor);
+                // Not found in list either – already deleted
                 return;
             }
+
             const pdsHost = baseUrl.replace(/^https?:\/\//, '').split('/')[0];
             throw new Error(`PDS (${pdsHost}) returned ${res.status}: ${msg || errCode || 'Could not delete record'}. rkey: ${rkey}`);
         }
 
-        // If delete returned success (2xx), deletion is accepted by PDS
-        // Don't verify immediately - PDS may have replication lag, but deletion is accepted
-        // The record will be gone on next sync
+        // Delete succeeded
     }
 
     // Export all articles as JSON
