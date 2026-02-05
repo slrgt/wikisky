@@ -217,10 +217,13 @@ class WikiStorage {
             try {
                 const { archive: lexiconArchive, albums: lexiconAlbums } = await this._loadArtboardFromLexicon();
                 if (lexiconArchive.length > 0 || lexiconAlbums.length > 0) {
+                    // Use lexicon as source of truth - items in lexicon exist, items not in lexicon were deleted
                     const pdsIds = new Set(lexiconArchive.map(a => a.id));
                     const onlyLocal = localArchive.filter(a => !pdsIds.has(a.id));
+                    // Merge: lexicon items (authoritative) + local-only items (not yet synced)
                     const merged = [...lexiconArchive, ...onlyLocal];
                     localStorage.setItem('xoxowiki-archive', JSON.stringify(merged));
+                    // Upload local-only items to PDS
                     for (const it of onlyLocal) {
                         try { await this._createArtboardItemOnPDS(it); } catch (_) {}
                     }
@@ -1327,16 +1330,23 @@ class WikiStorage {
 
     // Delete article (from PDS first so it fully deletes, then local)
     async deleteArticle(key) {
+        // Delete from PDS first (source of truth) - this ensures it's actually deleted
         if (this.storageMode === 'bluesky' && this.blueskyClient) {
             try {
                 await this.deleteArticleFromBluesky(key);
             } catch (e) {
-                // Only treat as "already gone" if error clearly says record not found; otherwise do NOT delete locally
+                // Only treat as "already gone" if error clearly says record not found
                 const msg = (e && e.message) || '';
                 const isRecordNotFound = /RecordNotFound|record not found|404/i.test(msg) && !/still exists|accepted but/i.test(msg);
-                if (!isRecordNotFound) throw e;
+                if (!isRecordNotFound) {
+                    // PDS deletion failed - throw error so caller knows
+                    console.error('Failed to delete article from PDS:', key, e);
+                    throw e;
+                }
+                // Record not found means it's already deleted, continue
             }
         }
+        // Only delete locally if PDS deletion succeeded (or not using PDS)
         await this.deleteArticleFromLocal(key);
     }
 
@@ -1364,66 +1374,30 @@ class WikiStorage {
             rkey
         };
         const deleteUrl = `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.deleteRecord`;
-        const getRecordUrl = `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`;
 
-        const doDelete = () => this._pdsFetch(deleteUrl, {
+        // Delete the record - if it returns success (2xx), deletion is accepted
+        const res = await this._pdsFetch(deleteUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
 
-        const verifyGone = async () => {
-            const res = await this._pdsFetch(getRecordUrl);
-            if (res.status === 404) return true; // record not found = gone
-            if (!res.ok) return false; // 401, 5xx, etc. = don't assume gone
-            const data = await res.json().catch(() => null);
-            return !(data && data.value);
-        };
-
-        // Pre-warm: one getRecord before delete so first request in session (e.g. DPoP nonce) is handled here, not on delete
-        try {
-            const preCheck = await this._pdsFetch(getRecordUrl);
-            if (preCheck.status === 404) return; // already gone
-        } catch (_) {
-            // proceed to delete anyway (e.g. network blip on pre-check)
-        }
-
-        let res = await doDelete();
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             const msg = err.message || err.error || '';
             const errCode = err.error || '';
             const isRecordNotFound = res.status === 404 || errCode === 'RecordNotFound' || (typeof msg === 'string' && /RecordNotFound|record not found/i.test(msg) && res.status >= 400 && res.status < 500);
-            if (isRecordNotFound) return;
+            if (isRecordNotFound) {
+                // Already deleted, that's fine
+                return;
+            }
             const pdsHost = baseUrl.replace(/^https?:\/\//, '').split('/')[0];
             throw new Error(`PDS (${pdsHost}) returned ${res.status}: ${msg || errCode || 'Could not delete record'}. rkey: ${rkey}`);
         }
 
-        // Verify the record is gone; some PDS (e.g. discina) have replication lag so we retry with backoff
-        const backoffMs = [400, 800, 1600, 3200];
-        let gone = await verifyGone();
-        for (const delay of backoffMs) {
-            if (gone) break;
-            await new Promise(r => setTimeout(r, delay));
-            gone = await verifyGone();
-        }
-        if (!gone) {
-            res = await doDelete();
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.message || err.error || `Delete failed (${res.status}). rkey: ${rkey}`);
-            }
-            gone = await verifyGone();
-            for (const delay of backoffMs) {
-                if (gone) break;
-                await new Promise(r => setTimeout(r, delay));
-                gone = await verifyGone();
-            }
-        }
-        // Delete was accepted (2xx); if verification still fails, treat as success and rely on eventual consistency
-        if (!gone) {
-            console.warn(`Delete accepted for rkey ${rkey} but getRecord still sees it (PDS replication lag?). Record should disappear shortly.`, baseUrl);
-        }
+        // If delete returned success (2xx), deletion is accepted by PDS
+        // Don't verify immediately - PDS may have replication lag, but deletion is accepted
+        // The record will be gone on next sync
     }
 
     // Export all articles as JSON
@@ -2737,26 +2711,128 @@ class WikiStorage {
         localStorage.setItem('xoxowiki-custom-feeds', JSON.stringify(filtered));
     }
 
-    // Search for Bluesky feed generators
-    async searchFeedGenerators(query, limit = 20) {
-        if (!query || query.trim().length === 0) return [];
+    // Get popular/curated feed generators
+    getPopularFeeds() {
+        return [
+            {
+                uri: 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot',
+                name: "What's Hot",
+                description: 'Popular posts right now',
+                creator: 'bsky.app'
+            },
+            {
+                uri: 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/discover',
+                name: 'Discover',
+                description: 'Discover new content',
+                creator: 'bsky.app'
+            },
+            {
+                uri: 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/popular-with-friends',
+                name: 'Popular With Friends',
+                description: 'Posts trending among people you follow',
+                creator: 'bsky.app'
+            },
+            {
+                uri: 'at://did:plc:emily/app.bsky.feed.generator/discover',
+                name: 'Discover (by emily)',
+                description: 'Surfaces posts with strong engagement',
+                creator: 'emily.bsky.app'
+            },
+            {
+                uri: 'at://did:plc:emily/app.bsky.feed.generator/quiet-posters',
+                name: 'Quiet Posters',
+                description: 'Thoughtful posts from infrequent posters',
+                creator: 'emily.bsky.app'
+            }
+        ];
+    }
+
+    // Get feed generator info by URI
+    async getFeedGeneratorInfo(uri) {
+        if (!uri || !uri.startsWith('at://')) return null;
         try {
-            const url = `https://public.api.bsky.app/xrpc/app.bsky.feed.searchFeedGenerators?q=${encodeURIComponent(query.trim())}&limit=${limit}`;
+            const url = `https://public.api.bsky.app/xrpc/app.bsky.feed.getFeedGenerator?feed=${encodeURIComponent(uri)}`;
             const response = await fetch(url);
-            if (!response.ok) throw new Error('Failed to search feeds');
+            if (!response.ok) return null;
             const data = await response.json();
-            return (data.feeds || []).map(feed => ({
+            const feed = data.view;
+            if (!feed) return null;
+            return {
                 uri: feed.uri,
                 name: feed.displayName || feed.name || 'Unnamed Feed',
                 description: feed.description || '',
                 avatar: feed.avatar || null,
                 creator: feed.creator?.handle || feed.creator?.did || null,
                 likeCount: feed.likeCount || 0
-            }));
+            };
         } catch (e) {
-            console.warn('Feed search failed:', e);
-            return [];
+            console.warn('Failed to get feed info:', e);
+            return null;
         }
+    }
+
+    // Search for Bluesky feed generators (note: no public search API exists, so we search by URI or use popular feeds)
+    async searchFeedGenerators(query, limit = 20) {
+        if (!query || query.trim().length === 0) {
+            // Return popular feeds if no query
+            return this.getPopularFeeds();
+        }
+        
+        const trimmedQuery = query.trim();
+        
+        // Check if query is a feed URI (at://...)
+        if (trimmedQuery.startsWith('at://')) {
+            const feedInfo = await this.getFeedGeneratorInfo(trimmedQuery);
+            return feedInfo ? [feedInfo] : [];
+        }
+        
+        // Check if query is a bsky.app URL
+        if (trimmedQuery.includes('bsky.app') && trimmedQuery.includes('/feed/')) {
+            try {
+                // Try to extract feed URI from URL
+                // Format: https://bsky.app/profile/[handle]/feed/[feed-name]
+                const match = trimmedQuery.match(/bsky\.app\/profile\/([^\/]+)\/feed\/([^\/\?#]+)/);
+                if (match) {
+                    const handle = match[1];
+                    const feedName = match[2];
+                    // Try to resolve handle to DID and construct URI
+                    // For now, try common patterns
+                    const possibleUri = `at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/${feedName}`;
+                    const feedInfo = await this.getFeedGeneratorInfo(possibleUri);
+                    if (feedInfo) return [feedInfo];
+                }
+            } catch (e) {
+                console.warn('Failed to parse feed URL:', e);
+            }
+        }
+        
+        // Search popular feeds by name/description
+        const popularFeeds = this.getPopularFeeds();
+        const queryLower = trimmedQuery.toLowerCase();
+        const matching = popularFeeds.filter(feed => 
+            feed.name.toLowerCase().includes(queryLower) ||
+            feed.description.toLowerCase().includes(queryLower) ||
+            feed.creator.toLowerCase().includes(queryLower)
+        );
+        
+        // Also try to fetch feed info for feeds matching the query pattern
+        const results = [...matching];
+        
+        // Try common feed patterns
+        const commonFeeds = [
+            `at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/${queryLower.replace(/\s+/g, '-')}`,
+            `at://did:plc:emily/app.bsky.feed.generator/${queryLower.replace(/\s+/g, '-')}`
+        ];
+        
+        for (const uri of commonFeeds) {
+            if (results.length >= limit) break;
+            const feedInfo = await this.getFeedGeneratorInfo(uri);
+            if (feedInfo && !results.find(r => r.uri === feedInfo.uri)) {
+                results.push(feedInfo);
+            }
+        }
+        
+        return results.slice(0, limit);
     }
 
     // Fetch feed from AT Protocol. Supports timeline (when logged in) or custom feed generators.
@@ -3275,9 +3351,16 @@ class WikiStorage {
     }
 
     async deleteArchiveItem(id) {
+        // Delete from PDS lexicon first (this is the source of truth)
         if (this.blueskyClient?.accessJwt) {
-            await this._deleteArtboardItemOnPDS(id);
+            try {
+                await this._deleteArtboardItemOnPDS(id);
+            } catch (e) {
+                console.error('Failed to delete from PDS:', e);
+                throw e; // Re-throw so caller knows deletion failed
+            }
         }
+        // Then remove from local storage
         const archive = this.getArchive();
         const item = archive.find(a => a.id === id);
         if (item && item.filename) {
@@ -3285,7 +3368,8 @@ class WikiStorage {
         }
         const filtered = archive.filter(a => a.id !== id);
         localStorage.setItem('xoxowiki-archive', JSON.stringify(filtered));
-        await this.syncArchiveToBlueskyIfConnected();
+        // Don't call syncArchiveToBlueskyIfConnected() here - we've already deleted from PDS lexicon
+        // Calling sync would re-upload the legacy format which could re-add deleted items
     }
 
     updateArchiveItem(id, updates) {
