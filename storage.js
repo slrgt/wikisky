@@ -1796,21 +1796,30 @@ class WikiStorage {
         }
     }
 
-    // ===== AT PROTOCOL BLOB (images on Bluesky, no self-hosting) =====
+    // ===== AT PROTOCOL BLOB (images/videos on Bluesky PDS) =====
+    _blobExtensionFromMime(mimeType) {
+        if (!mimeType || typeof mimeType !== 'string') return 'bin';
+        const m = mimeType.split('/')[1] || '';
+        if (m === 'jpeg' || m === 'jpg' || m === 'png' || m === 'gif' || m === 'webp') return m === 'jpeg' ? 'jpg' : m;
+        if (mimeType.startsWith('video/')) return m || 'mp4';
+        return m || 'bin';
+    }
+
     async uploadBlobToAtProtocol(blob, mimeType) {
         if (!this.blueskyClient || !this.blueskyClient.accessJwt) {
-            throw new Error('Connect to Bluesky first to upload images to the AT Protocol.');
+            throw new Error('Connect to Bluesky first to upload media to the AT Protocol.');
         }
         await this.ensureValidToken();
+        const ext = this._blobExtensionFromMime(mimeType);
         const formData = new FormData();
-        formData.append('file', blob, `image.${mimeType.split('/')[1] || 'jpg'}`);
+        formData.append('file', blob, `media.${ext}`);
         const response = await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', {
             method: 'POST',
             body: formData
         });
         if (!response.ok) {
             const err = await response.json().catch(() => ({}));
-            throw new Error(err.message || 'Failed to upload image to AT Protocol');
+            throw new Error(err.message || 'Failed to upload media to AT Protocol');
         }
         const data = await response.json();
         return data.blob; // { $type, ref: { $link: "cid:..." }, mimeType, size }
@@ -2176,27 +2185,64 @@ class WikiStorage {
             item.id = item.id || (Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9));
             item.createdAt = item.createdAt || new Date().toISOString();
             
-            // Option A: External URL (AT Protocol / Bluesky CDN / any URL) – no upload, no local file
+            // Option A: External URL (AT Protocol / Bluesky CDN / any URL)
+            // When connected to Bluesky, upload media to user's PDS so artboards sync and media lives in their repo
             if (hasUrl) {
-                const archive = this.getArchive();
-                const metadata = {
+                let metadata = {
                     id: item.id,
                     name: item.name || 'Image',
                     type: item.type || 'image',
                     source: item.source,
                     createdAt: item.createdAt,
-                    imageUrl: item.imageUrl,
                     albumIds: item.albumIds || [],
                     articleIds: item.articleIds || [],
                     habitDays: item.habitDays || [],
                     assignmentType: item.assignmentType || 'albums'
                 };
-                if (item.videoUrl) metadata.videoUrl = item.videoUrl;
                 if (item.authorHandle) metadata.authorHandle = item.authorHandle;
                 if (item.authorDid) metadata.authorDid = item.authorDid;
                 if (item.authorDisplayName) metadata.authorDisplayName = item.authorDisplayName;
                 const pt = item.postText ?? item.textSnippet;
                 if (pt) metadata.postText = pt;
+
+                if (this.blueskyClient && this.blueskyClient.accessJwt) {
+                    try {
+                        await this.ensureValidToken();
+                        const imageUrlToFetch = item.imageUrl;
+                        const imageRes = await fetch(imageUrlToFetch, { mode: 'cors' });
+                        if (!imageRes.ok) throw new Error(`Failed to fetch image: ${imageRes.status}`);
+                        const imageBlob = await imageRes.blob();
+                        const imageMime = imageBlob.type || 'image/jpeg';
+                        const imageBlobResult = await this.uploadBlobToAtProtocol(imageBlob, imageMime);
+                        const blobUrl = this.getAtProtocolBlobUrl(imageBlobResult.ref?.$link || imageBlobResult.ref, this.blueskyClient.did);
+                        metadata.atBlobRef = imageBlobResult.ref;
+                        metadata.atBlobRefDid = this.blueskyClient.did;
+                        metadata.imageUrl = blobUrl;
+
+                        if (item.type === 'video' && item.videoUrl && typeof item.videoUrl === 'string' && item.videoUrl.startsWith('http')) {
+                            const videoRes = await fetch(item.videoUrl, { mode: 'cors' });
+                            if (videoRes.ok) {
+                                const videoBlob = await videoRes.blob();
+                                const videoMime = videoBlob.type || 'video/mp4';
+                                const videoBlobResult = await this.uploadBlobToAtProtocol(videoBlob, videoMime);
+                                metadata.videoUrl = this.getAtProtocolBlobUrl(videoBlobResult.ref?.$link || videoBlobResult.ref, this.blueskyClient.did);
+                            } else {
+                                metadata.videoUrl = item.videoUrl;
+                            }
+                        } else if (item.videoUrl) {
+                            metadata.videoUrl = item.videoUrl;
+                        }
+                    } catch (e) {
+                        console.warn('Upload URL media to PDS failed, saving URL only:', e);
+                        metadata.imageUrl = item.imageUrl;
+                        if (item.videoUrl) metadata.videoUrl = item.videoUrl;
+                    }
+                } else {
+                    metadata.imageUrl = item.imageUrl;
+                    if (item.videoUrl) metadata.videoUrl = item.videoUrl;
+                }
+
+                const archive = this.getArchive();
                 archive.unshift(metadata);
                 localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
                 await this.syncArchiveToBlueskyIfConnected();
