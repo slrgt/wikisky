@@ -897,8 +897,17 @@ class WikiStorage {
             const res = await fetch(`https://plc.directory/${encodeURIComponent(did)}`);
             if (!res.ok) return 'https://bsky.social';
             const didDoc = await res.json();
-            const url = didDoc.service?.[0]?.serviceEndpoint || 'https://bsky.social';
-            return typeof url === 'string' ? url.replace(/\/$/, '') : 'https://bsky.social';
+            const services = didDoc.service;
+            if (Array.isArray(services)) {
+                const pds = services.find(s => s?.type === 'AtpPersonalDataServer');
+                if (pds && typeof pds.serviceEndpoint === 'string') {
+                    return pds.serviceEndpoint.replace(/\/$/, '');
+                }
+                if (services[0] && typeof services[0].serviceEndpoint === 'string') {
+                    return services[0].serviceEndpoint.replace(/\/$/, '');
+                }
+            }
+            return 'https://bsky.social';
         } catch (_) {
             return 'https://bsky.social';
         }
@@ -1118,98 +1127,72 @@ class WikiStorage {
 
     // Delete article (from PDS first so it fully deletes, then local)
     async deleteArticle(key) {
-        console.log('deleteArticle called:', { key, storageMode: this.storageMode, hasClient: !!this.blueskyClient });
         if (this.storageMode === 'bluesky' && this.blueskyClient) {
             try {
                 await this.deleteArticleFromBluesky(key);
-                console.log('PDS deletion succeeded for:', key);
             } catch (e) {
-                console.error('PDS deletion failed:', e);
-                const isNotFound = e.message && (e.message.includes('NotFound') || e.message.includes('404') || e.message.includes('RecordNotFound'));
-                if (!isNotFound) {
-                    console.error('Throwing error - not a NotFound error');
-                    throw e;
-                }
-                console.log('PDS deletion NotFound - continuing with local deletion');
+                // Only treat as "already gone" if error clearly says record not found; otherwise do NOT delete locally
+                const msg = (e && e.message) || '';
+                const isRecordNotFound = /RecordNotFound|record not found|404/i.test(msg) && !/still exists|accepted but/i.test(msg);
+                if (!isRecordNotFound) throw e;
             }
         }
-        console.log('Deleting locally:', key);
         await this.deleteArticleFromLocal(key);
-        console.log('Local deletion completed. Articles now:', Object.keys(this.articles));
     }
 
     async deleteArticleFromLocal(key) {
-        const hadArticle = key in this.articles;
         delete this.articles[key];
-        // Remove history entries for this article
         this.history = this.history.filter(h => h.articleKey !== key);
         this.saveToLocalStorage();
-        console.log('deleteArticleFromLocal:', { key, hadArticle, stillExists: key in this.articles });
-        // Verify it's actually gone from localStorage
-        const stored = localStorage.getItem('xoxowiki-articles');
-        if (stored) {
-            const parsed = JSON.parse(stored);
-            if (key in parsed) {
-                console.error('ERROR: Article still exists in localStorage after deletion!', key);
-            }
-        }
     }
 
     async deleteArticleFromBluesky(key) {
         await this.ensureValidToken();
-        if (!this.blueskyClient.pdsUrl) {
-            this.blueskyClient.pdsUrl = await this._resolvePdsUrlForDid(this.blueskyClient.did);
-            const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
-            session.pdsUrl = this.blueskyClient.pdsUrl;
-            localStorage.setItem('bluesky-session', JSON.stringify(session));
-        }
+        // Always resolve PDS from DID so we hit the correct server (your data lives on your PDS)
+        const resolvedPds = await this._resolvePdsUrlForDid(this.blueskyClient.did);
+        this.blueskyClient.pdsUrl = resolvedPds;
+        const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
+        session.pdsUrl = resolvedPds;
+        localStorage.setItem('bluesky-session', JSON.stringify(session));
+
         const rkey = this._toValidArticleRkey(key);
-        console.log('Deleting article:', { key, rkey, did: this.blueskyClient.did, pdsBase: this._pdsBaseForRepo() });
+        const baseUrl = this._pdsBaseForRepo();
+        console.log('Deleting article from PDS:', { key, rkey, did: this.blueskyClient.did, pds: baseUrl });
         const body = {
             repo: this.blueskyClient.did,
             collection: 'site.standard.document',
             rkey
         };
-        const doDelete = (baseUrl) => this._pdsFetch(`${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.deleteRecord`, {
+        const deleteUrl = `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.deleteRecord`;
+        const res = await this._pdsFetch(deleteUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
-        const verifyDeletion = async (baseUrl) => {
-            try {
-                const checkRes = await this._pdsFetch(`${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`);
-                if (checkRes.ok) {
-                    const checkData = await checkRes.json().catch(() => null);
-                    if (checkData && checkData.value) {
-                        throw new Error(`Delete appeared to succeed but record still exists on PDS (rkey: ${rkey})`);
-                    }
-                }
-                // Record not found (404) = deletion succeeded
-            } catch (checkErr) {
-                if (checkErr.message && checkErr.message.includes('still exists')) throw checkErr;
-                // Other errors (like network) - assume deletion succeeded if HTTP was 200
-            }
-        };
 
-        let res = await doDelete(this._pdsBaseForRepo());
-        let deleteBase = this._pdsBaseForRepo();
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             const msg = err.message || err.error || '';
-            if (msg.includes('PDS access only') && this._pdsBaseForRepo() !== 'https://bsky.social') {
-                res = await doDelete('https://bsky.social');
-                if (res.ok) {
-                    deleteBase = 'https://bsky.social';
-                    await verifyDeletion(deleteBase);
-                    return;
-                }
+            const errCode = err.error || '';
+            // Only treat as "record already gone" for explicit 404 or RecordNotFound
+            const isRecordNotFound = res.status === 404 || errCode === 'RecordNotFound' || (typeof msg === 'string' && /RecordNotFound|record not found/i.test(msg) && res.status >= 400 && res.status < 500);
+            if (isRecordNotFound) {
+                console.log('Record already missing on PDS, continuing with local delete:', rkey);
+                return;
             }
-            const fullMsg = msg || `Failed to delete article from Bluesky PDS (HTTP ${res.status}). rkey: ${rkey}`;
-            console.error('Delete article error:', { rkey, status: res.status, error: err, pdsBase: this._pdsBaseForRepo() });
-            throw new Error(fullMsg);
+            const pdsHost = baseUrl.replace(/^https?:\/\//, '').split('/')[0];
+            throw new Error(`PDS (${pdsHost}) returned ${res.status}: ${msg || errCode || 'Could not delete record'}. rkey: ${rkey}`);
         }
-        // Verify deletion succeeded
-        await verifyDeletion(deleteBase);
+
+        // Verify the record is actually gone
+        const checkUrl = `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`;
+        const checkRes = await this._pdsFetch(checkUrl);
+        if (checkRes.ok) {
+            const checkData = await checkRes.json().catch(() => null);
+            if (checkData && checkData.value) {
+                throw new Error(`Delete was accepted but record still exists on PDS. Try again or check PDS (${baseUrl}).`);
+            }
+        }
     }
 
     // Export all articles as JSON
@@ -2499,6 +2482,61 @@ class WikiStorage {
         return { items, cursor: data.cursor || null };
     }
 
+    /** Fetch a single Bluesky post by at-uri. Returns { uri, cid, record, author, embed } or null. */
+    async getBlueskyPost(uri) {
+        if (!uri || !uri.startsWith('at://')) return null;
+        try {
+            const url = `https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts?uris=${encodeURIComponent(uri)}`;
+            const res = await fetch(url);
+            if (!res.ok) return null;
+            const data = await res.json();
+            const post = (data.posts || [])[0];
+            if (!post) return null;
+            return {
+                uri: post.uri,
+                cid: post.cid,
+                record: post.record,
+                author: post.author,
+                embed: post.embed
+            };
+        } catch (e) {
+            console.warn('getBlueskyPost failed:', e);
+            return null;
+        }
+    }
+
+    /** Post a reply to a Bluesky post. parentUri is the at-uri of the post to reply to. */
+    async postBlueskyReply(parentUri, text) {
+        if (!this.blueskyClient?.accessJwt) throw new Error('Not connected to Bluesky');
+        const trimmed = (text || '').trim();
+        if (!trimmed) throw new Error('Reply text is required');
+        await this.ensureValidToken();
+        const parent = await this.getBlueskyPost(parentUri);
+        if (!parent || !parent.uri || !parent.cid) throw new Error('Could not load the post to reply to');
+        const ref = { uri: parent.uri, cid: parent.cid };
+        const record = {
+            $type: 'app.bsky.feed.post',
+            text: trimmed,
+            createdAt: new Date().toISOString(),
+            reply: { parent: ref, root: ref }
+        };
+        const res = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.createRecord`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                repo: this.blueskyClient.did,
+                collection: 'app.bsky.feed.post',
+                record
+            })
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.message || err.error || 'Failed to post reply');
+        }
+        const data = await res.json();
+        return { uri: data.uri, cid: data.cid };
+    }
+
     // Get image data URL - AT Protocol URL, imageUrl, disk/IndexedDB, or imageData
     async getArchiveItemImageData(item) {
         // 1) External URL (e.g. Bluesky CDN, AT Protocol blob URL) – use as-is for display
@@ -2630,6 +2668,7 @@ class WikiStorage {
                 if (item.authorDisplayName) metadata.authorDisplayName = item.authorDisplayName;
                 const pt = item.postText ?? item.textSnippet;
                 if (pt) metadata.postText = pt;
+                if (item.userNote) metadata.userNote = item.userNote;
 
                 if (this.blueskyClient && this.blueskyClient.accessJwt) {
                     try {

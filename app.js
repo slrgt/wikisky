@@ -300,6 +300,10 @@ class WikiApp {
                     this.closeUploadWebcomicModal();
                 } else if (e.target.closest('#pds-data-modal')) {
                     this.closePDSDataModal();
+                } else if (e.target.closest('#browse-post-modal')) {
+                    document.getElementById('browse-post-modal').style.display = 'none';
+                } else if (e.target.closest('#browse-add-modal')) {
+                    document.getElementById('browse-add-modal').style.display = 'none';
                 } else {
                     this.closeModal();
                 }
@@ -7114,7 +7118,9 @@ ${document.body.innerHTML}
             
             if (items.length === 0) {
                 grid.innerHTML = '<p class="archive-empty">No images or videos in this batch. Try again later.</p>';
+                this.browseFeedItems = [];
             } else {
+                this.browseFeedItems = items;
                 grid.innerHTML = items.map((item, idx) => {
                     const url = item.videoUrl || item.imageUrl;
                     const thumbUrl = item.imageUrl;
@@ -7122,7 +7128,7 @@ ${document.body.innerHTML}
                     const text = (item.textSnippet || '').replace(/"/g, '&quot;').slice(0, 80);
                     const addId = `browse-add-${idx}`;
                     return `
-                        <div class="archive-page-item browse-item" data-browse-index="${idx}">
+                        <div class="archive-page-item browse-item browse-item-clickable" data-browse-index="${idx}">
                             ${item.type === 'video'
                                 ? `<video src="${url}" class="browse-media" muted loop playsinline></video>`
                                 : `<img src="${thumbUrl}" alt="${item.alt || ''}" class="browse-media" loading="lazy">`}
@@ -7135,10 +7141,19 @@ ${document.body.innerHTML}
                     `;
                 }).join('');
                 
+                grid.addEventListener('click', (e) => {
+                    const card = e.target.closest('.browse-item');
+                    if (!card) return;
+                    if (e.target.closest('.browse-add-btn')) return;
+                    const idx = parseInt(card.getAttribute('data-browse-index'), 10);
+                    if (!isNaN(idx) && this.browseFeedItems && this.browseFeedItems[idx]) {
+                        this.showBrowsePostModal(this.browseFeedItems[idx]);
+                    }
+                });
                 items.forEach((item, idx) => {
                     const btn = document.getElementById(`browse-add-${idx}`);
                     if (btn) {
-                        btn.addEventListener('click', () => this.addBrowseItemToCollection(item));
+                        btn.addEventListener('click', (e) => { e.stopPropagation(); this.showBrowseAddModal(item); });
                     }
                 });
             }
@@ -7169,40 +7184,103 @@ ${document.body.innerHTML}
         this.updateRightSidebar();
     }
 
-    async addBrowseItemToCollection(item) {
-        const url = item.videoUrl || item.imageUrl;
-        const albums = this.storage.getAlbums();
-        const archiveItem = {
-            imageUrl: url,
-            name: item.authorHandle ? `@${item.authorHandle}` : 'From feed',
-            type: item.type || 'image',
-            source: item.postUri ? `https://bsky.app/profile/${item.authorHandle}/post/${(item.postUri || '').split('/').pop()}` : '',
-            albumIds: [],
-            assignmentType: 'albums',
-            articleIds: [],
-            habitDays: [],
-            authorHandle: item.authorHandle,
-            authorDid: item.authorDid,
-            authorDisplayName: item.authorDisplayName,
-            postText: item.postText ?? item.textSnippet
-        };
-        try {
-            const saved = await this.storage.saveArchiveItem(archiveItem);
-            this.showUpdateNotification('Added to your archive. Assign it to an artboard from Artboards.');
-            if (albums.length > 0 && saved) {
-                const chosen = prompt(`Add to an artboard? Enter name (or leave blank): ${albums.map(a => a.name).join(', ')}`);
-                if (chosen && chosen.trim()) {
-                    const album = albums.find(a => a.name.toLowerCase() === chosen.trim().toLowerCase());
-                    if (album && saved.id) {
-                        this.storage.updateArchiveItem(saved.id, { albumIds: [album.id] });
-                        this.showUpdateNotification(`Added to artboard "${album.name}"`);
-                    }
-                }
-            }
-        } catch (e) {
-            console.error(e);
-            alert('Failed to add: ' + (e.message || 'Unknown error'));
+    showBrowsePostModal(item) {
+        this._browsePostModalItem = item;
+        const modal = document.getElementById('browse-post-modal');
+        const titleEl = document.getElementById('browse-post-modal-title');
+        const mediaEl = document.getElementById('browse-post-media');
+        const textEl = document.getElementById('browse-post-fulltext');
+        const replyText = document.getElementById('browse-post-reply-text');
+        if (!modal || !titleEl || !mediaEl || !textEl || !replyText) return;
+        titleEl.textContent = item.authorDisplayName ? `@${item.authorHandle} — ${item.authorDisplayName}` : `@${item.authorHandle}`;
+        mediaEl.innerHTML = '';
+        if (item.type === 'video') {
+            const video = document.createElement('video');
+            video.src = item.videoUrl || item.imageUrl;
+            video.controls = true;
+            video.classList.add('browse-post-media');
+            mediaEl.appendChild(video);
+        } else {
+            const img = document.createElement('img');
+            img.src = item.imageUrl;
+            img.alt = item.alt || '';
+            img.classList.add('browse-post-media');
+            mediaEl.appendChild(img);
         }
+        const fullText = (item.postText || item.textSnippet || '').trim();
+        textEl.textContent = fullText || '(No text)';
+        replyText.value = '';
+        modal.style.display = 'flex';
+        const replyBtn = document.getElementById('browse-post-reply-btn');
+        replyBtn.onclick = async () => {
+            const text = replyText.value.trim();
+            if (!text) { alert('Please enter a reply.'); return; }
+            if (!item.postUri) { alert('This post cannot be replied to.'); return; }
+            replyBtn.disabled = true;
+            try {
+                await this.storage.postBlueskyReply(item.postUri, text);
+                this.showUpdateNotification('Reply posted!');
+                replyText.value = '';
+                modal.style.display = 'none';
+            } catch (e) {
+                alert('Could not post reply: ' + (e.message || e));
+            } finally {
+                replyBtn.disabled = false;
+            }
+        };
+    }
+
+    showBrowseAddModal(item) {
+        this._browseAddModalItem = item;
+        const modal = document.getElementById('browse-add-modal');
+        const listEl = document.getElementById('browse-add-artboard-list');
+        const noteEl = document.getElementById('browse-add-note');
+        if (!modal || !listEl || !noteEl) return;
+        const albums = this.storage.getAlbums();
+        listEl.innerHTML = albums.length === 0
+            ? '<p class="browse-add-desc">No artboards yet. Create one from the Artboards page first.</p>'
+            : albums.map(a => `
+                <label>
+                    <input type="checkbox" name="browse-add-artboard" value="${this.escapeHtml(a.id)}">
+                    <span>${this.escapeHtml(a.name)}</span>
+                </label>
+            `).join('');
+        noteEl.value = '';
+        modal.style.display = 'flex';
+        const submitBtn = document.getElementById('browse-add-submit-btn');
+        submitBtn.onclick = async () => {
+            const selected = Array.from(document.querySelectorAll('input[name="browse-add-artboard"]:checked')).map(el => el.value);
+            const note = noteEl.value.trim();
+            const url = item.videoUrl || item.imageUrl;
+            const archiveItem = {
+                imageUrl: url,
+                name: item.authorHandle ? `@${item.authorHandle}` : 'From feed',
+                type: item.type || 'image',
+                source: item.postUri ? `https://bsky.app/profile/${item.authorHandle}/post/${(item.postUri || '').split('/').pop()}` : '',
+                albumIds: selected,
+                assignmentType: 'albums',
+                articleIds: [],
+                habitDays: [],
+                authorHandle: item.authorHandle,
+                authorDid: item.authorDid,
+                authorDisplayName: item.authorDisplayName,
+                postText: item.postText ?? item.textSnippet
+            };
+            if (note) archiveItem.userNote = note;
+            try {
+                await this.storage.saveArchiveItem(archiveItem);
+                this.showUpdateNotification(selected.length ? `Added to ${selected.length} artboard(s).` : 'Added to your archive.');
+                modal.style.display = 'none';
+                if (this.currentArticleKey === 'collection') this.showCollectionPage(this.currentCollectionFilter);
+            } catch (e) {
+                console.error(e);
+                alert('Failed to add: ' + (e.message || 'Unknown error'));
+            }
+        };
+    }
+
+    async addBrowseItemToCollection(item) {
+        this.showBrowseAddModal(item);
     }
 
     // ===== COLLECTION PAGE =====

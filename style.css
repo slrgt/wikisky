@@ -3983,6 +3983,102 @@ h3:hover .section-actions {
     width: 100%;
 }
 
+.browse-item.browse-item-clickable {
+    cursor: pointer;
+}
+.browse-item.browse-item-clickable:hover {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+/* Browse post detail modal: media left, text + comment right */
+#browse-post-modal .modal-content.browse-post-modal-content {
+    max-width: 90vw;
+    width: 720px;
+}
+.browse-post-layout {
+    display: flex;
+    gap: 1.5rem;
+    align-items: flex-start;
+    min-height: 200px;
+}
+.browse-post-media-wrap {
+    flex: 0 0 auto;
+    max-width: 50%;
+    min-width: 200px;
+}
+.browse-post-media-wrap img,
+.browse-post-media-wrap video {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 8px;
+    background: #eee;
+}
+.browse-post-text-wrap {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+.browse-post-fulltext {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    overflow-y: auto;
+    max-height: 40vh;
+}
+.browse-post-comment-section label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 0.35em;
+    font-size: 0.9rem;
+}
+.browse-post-comment-section textarea {
+    width: 100%;
+    padding: 0.5em;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    resize: vertical;
+    margin-bottom: 0.5em;
+}
+@media (max-width: 640px) {
+    .browse-post-layout {
+        flex-direction: column;
+    }
+    .browse-post-media-wrap {
+        max-width: 100%;
+    }
+}
+
+/* Browse add-to-collection modal */
+.browse-add-desc {
+    margin-bottom: 0.75em;
+    color: var(--mw-secondary-text, #555);
+}
+.browse-add-artboard-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    max-height: 200px;
+    overflow-y: auto;
+}
+.browse-add-artboard-list label {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    cursor: pointer;
+    font-weight: normal;
+}
+.browse-add-artboard-list input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+}
+
 .collection-item-selectable {
     cursor: pointer;
 }

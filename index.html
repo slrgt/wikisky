@@ -591,6 +591,53 @@
         </div>
     </div>
 
+    <!-- Browse: Post detail modal (click on a post) -->
+    <div id="browse-post-modal" class="article-modal" style="display: none;">
+        <div class="modal-content browse-post-modal-content">
+            <div class="modal-header">
+                <h2 id="browse-post-modal-title">Post</h2>
+                <button class="modal-close" id="browse-post-modal-close">&times;</button>
+            </div>
+            <div class="modal-body browse-post-modal-body">
+                <div class="browse-post-layout">
+                    <div class="browse-post-media-wrap">
+                        <div id="browse-post-media"></div>
+                    </div>
+                    <div class="browse-post-text-wrap">
+                        <p id="browse-post-fulltext" class="browse-post-fulltext"></p>
+                        <div class="browse-post-comment-section">
+                            <label for="browse-post-reply-text">Leave a comment</label>
+                            <textarea id="browse-post-reply-text" placeholder="Write your reply..." rows="3"></textarea>
+                            <button type="button" class="btn-primary" id="browse-post-reply-btn">Post reply</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Browse: Add to collection modal (artboard selector + note) -->
+    <div id="browse-add-modal" class="article-modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Add to collection</h2>
+                <button class="modal-close" id="browse-add-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="browse-add-desc">Select which artboard(s) to add this to:</p>
+                <div id="browse-add-artboard-list" class="browse-add-artboard-list"></div>
+                <div class="form-group" style="margin-top: 1em;">
+                    <label for="browse-add-note">Note (optional)</label>
+                    <textarea id="browse-add-note" placeholder="Add a note..." rows="2"></textarea>
+                </div>
+                <div class="modal-actions" style="margin-top: 1em;">
+                    <button type="button" class="btn-primary" id="browse-add-submit-btn">Add</button>
+                    <button type="button" class="btn-secondary" id="browse-add-cancel-btn">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
     <script src="storage.js"></script>
     <script src="app.js"></script>
