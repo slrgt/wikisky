@@ -524,7 +524,7 @@ class WikiStorage {
         const privateJwk = await this._exportKeyJwk(keypair.privateKey);
         const publicJwk = await this._exportKeyJwk(keypair.publicKey);
 
-        const scopePreferred = 'atproto repo:site.standard.document repo:com.atproto.repo.record';
+        const scopePreferred = 'atproto repo:site.standard.document repo:com.atproto.repo.record rpc:app.bsky.feed.getTimeline?aud=did:web:api.bsky.app%23bsky_appview';
         const scopeFallback = 'atproto transition:generic';
         let parBody = new URLSearchParams({
             response_type: 'code',
