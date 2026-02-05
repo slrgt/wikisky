@@ -1120,18 +1120,31 @@ class WikiStorage {
 
     async deleteArticleFromBluesky(key) {
         await this.ensureValidToken();
-        const res = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.deleteRecord`, {
+        if (!this.blueskyClient.pdsUrl) {
+            this.blueskyClient.pdsUrl = await this._resolvePdsUrlForDid(this.blueskyClient.did);
+            const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
+            session.pdsUrl = this.blueskyClient.pdsUrl;
+            localStorage.setItem('bluesky-session', JSON.stringify(session));
+        }
+        const body = {
+            repo: this.blueskyClient.did,
+            collection: 'site.standard.document',
+            rkey: key
+        };
+        const doDelete = (baseUrl) => this._pdsFetch(`${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.deleteRecord`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                repo: this.blueskyClient.did,
-                collection: 'site.standard.document',
-                rkey: key
-            })
+            body: JSON.stringify(body)
         });
+        let res = await doDelete(this._pdsBase());
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            throw new Error(err.message || err.error || `Failed to delete article from Bluesky (${res.status})`);
+            const msg = err.message || err.error || '';
+            if (msg.includes('PDS access only') && this._pdsBase() !== 'https://bsky.social') {
+                res = await doDelete('https://bsky.social');
+                if (res.ok) return;
+            }
+            throw new Error(msg || `Failed to delete article from Bluesky (${res.status})`);
         }
     }
 
