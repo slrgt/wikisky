@@ -2739,6 +2739,21 @@ class WikiStorage {
         }
     }
 
+    /** Fetch post thread with replies. Returns thread data with replies nested. */
+    async getBlueskyPostThread(uri) {
+        if (!uri || !uri.startsWith('at://')) return null;
+        try {
+            const url = `https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread?uri=${encodeURIComponent(uri)}`;
+            const res = await fetch(url);
+            if (!res.ok) return null;
+            const data = await res.json();
+            return data.thread || null;
+        } catch (e) {
+            console.warn('getBlueskyPostThread failed:', e);
+            return null;
+        }
+    }
+
     /** Post a reply to a Bluesky post. parentUri is the at-uri of the post to reply to. */
     async postBlueskyReply(parentUri, text) {
         if (!this.blueskyClient?.accessJwt) throw new Error('Not connected to Bluesky');

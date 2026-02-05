@@ -309,6 +309,28 @@ class WikiApp {
                 }
             });
         });
+        
+        // Close browse-post-modal when clicking outside (on backdrop)
+        const browsePostModal = document.getElementById('browse-post-modal');
+        if (browsePostModal) {
+            browsePostModal.addEventListener('click', (e) => {
+                // If click is directly on the modal backdrop (not on modal-content or its children), close it
+                if (e.target === browsePostModal) {
+                    browsePostModal.style.display = 'none';
+                }
+            });
+        }
+        
+        // Close browse-add-modal when clicking outside (on backdrop)
+        const browseAddModal = document.getElementById('browse-add-modal');
+        if (browseAddModal) {
+            browseAddModal.addEventListener('click', (e) => {
+                // If click is directly on the modal backdrop (not on modal-content or its children), close it
+                if (e.target === browseAddModal) {
+                    browseAddModal.style.display = 'none';
+                }
+            });
+        }
 
         // Bluesky connection (handled in menu section above)
         
@@ -7101,10 +7123,15 @@ ${document.body.innerHTML}
 
     // ===== BROWSE PAGE (AT Protocol feed) =====
     browseFeedCursor = null;
+    browseFeedItems = [];
+    browseFeedLoading = false;
 
-    async showBrowsePage(cursor = null) {
+    async showBrowsePage(cursor = null, append = false) {
         const container = document.getElementById('article-container');
         if (!container) return;
+        
+        // Prevent multiple simultaneous loads
+        if (this.browseFeedLoading) return;
         
         this.currentArticleKey = 'browse';
         const isLoggedIn = this.storage.storageMode === 'bluesky' && this.storage.blueskyClient?.accessJwt;
@@ -7112,41 +7139,67 @@ ${document.body.innerHTML}
         const browseDesc = isLoggedIn
             ? 'Images and videos from your feed. Add any to your artboards.'
             : 'Discover images and videos from the Bluesky feed. Add any to your artboards.';
-        container.innerHTML = `
-            <div class="browse-page-header">
-                <h1>${browseTitle}</h1>
-                <p class="browse-page-desc">${browseDesc}</p>
-                <div class="browse-loading" id="browse-loading">Loading feed…</div>
-            </div>
-            <div id="browse-grid" class="archive-page-grid"></div>
-            <div id="browse-load-more" style="text-align:center;margin:1.5em 0;display:none;">
-                <button type="button" class="btn-primary" id="browse-load-more-btn">Load more</button>
-            </div>
-        `;
+        
+        // Only initialize HTML if not appending
+        if (!append) {
+            container.innerHTML = `
+                <div class="browse-page-header">
+                    <h1>${browseTitle}</h1>
+                    <p class="browse-page-desc">${browseDesc}</p>
+                    <div class="browse-loading" id="browse-loading">Loading feed…</div>
+                </div>
+                <div id="browse-grid" class="archive-page-grid"></div>
+                <div id="browse-load-more" style="text-align:center;margin:1.5em 0;display:none;">
+                    <button type="button" class="btn-primary" id="browse-load-more-btn">Load more</button>
+                </div>
+            `;
+            this.browseFeedItems = [];
+            // Remove old scroll listener if it exists
+            if (this._browseScrollHandler) {
+                window.removeEventListener('scroll', this._browseScrollHandler);
+                this._browseScrollHandler = null;
+            }
+        }
         
         const grid = document.getElementById('browse-grid');
         const loadingEl = document.getElementById('browse-loading');
         const loadMoreWrap = document.getElementById('browse-load-more');
         const loadMoreBtn = document.getElementById('browse-load-more-btn');
         
+        if (!grid) return;
+        
+        this.browseFeedLoading = true;
+        if (loadingEl && !append) {
+            loadingEl.style.display = 'block';
+        }
+        if (loadMoreBtn) {
+            loadMoreBtn.disabled = true;
+            loadMoreBtn.textContent = 'Loading...';
+        }
+        
         try {
             const { items, cursor: nextCursor } = await this.storage.fetchBrowseFeed(cursor, 30);
             this.browseFeedCursor = nextCursor;
-            loadingEl.style.display = 'none';
+            
+            if (loadingEl) loadingEl.style.display = 'none';
             
             if (items.length === 0) {
-                grid.innerHTML = '<p class="archive-empty">No images or videos in this batch. Try again later.</p>';
-                this.browseFeedItems = [];
+                if (!append) {
+                    grid.innerHTML = '<p class="archive-empty">No images or videos in this batch. Try again later.</p>';
+                }
             } else {
-                this.browseFeedItems = items;
-                grid.innerHTML = items.map((item, idx) => {
+                const startIdx = this.browseFeedItems.length;
+                this.browseFeedItems = this.browseFeedItems.concat(items);
+                
+                const itemsHtml = items.map((item, idx) => {
+                    const actualIdx = startIdx + idx;
                     const url = item.videoUrl || item.imageUrl;
                     const thumbUrl = item.imageUrl;
                     const author = (item.authorHandle || '').replace(/"/g, '&quot;');
                     const text = (item.textSnippet || '').replace(/"/g, '&quot;').slice(0, 80);
-                    const addId = `browse-add-${idx}`;
+                    const addId = `browse-add-${actualIdx}`;
                     return `
-                        <div class="archive-page-item browse-item browse-item-clickable" data-browse-index="${idx}">
+                        <div class="archive-page-item browse-item browse-item-clickable" data-browse-index="${actualIdx}">
                             ${item.type === 'video'
                                 ? `<video src="${url}" class="browse-media" muted loop playsinline></video>`
                                 : `<img src="${thumbUrl}" alt="${item.alt || ''}" class="browse-media" loading="lazy">`}
@@ -7159,17 +7212,26 @@ ${document.body.innerHTML}
                     `;
                 }).join('');
                 
-                grid.addEventListener('click', (e) => {
-                    const card = e.target.closest('.browse-item');
-                    if (!card) return;
-                    if (e.target.closest('.browse-add-btn')) return;
-                    const idx = parseInt(card.getAttribute('data-browse-index'), 10);
-                    if (!isNaN(idx) && this.browseFeedItems && this.browseFeedItems[idx]) {
-                        this.showBrowsePostModal(this.browseFeedItems[idx]);
-                    }
-                });
+                if (append) {
+                    grid.insertAdjacentHTML('beforeend', itemsHtml);
+                } else {
+                    grid.innerHTML = itemsHtml;
+                    // Set up click handler once
+                    grid.addEventListener('click', (e) => {
+                        const card = e.target.closest('.browse-item');
+                        if (!card) return;
+                        if (e.target.closest('.browse-add-btn')) return;
+                        const idx = parseInt(card.getAttribute('data-browse-index'), 10);
+                        if (!isNaN(idx) && this.browseFeedItems && this.browseFeedItems[idx]) {
+                            this.showBrowsePostModal(this.browseFeedItems[idx]);
+                        }
+                    });
+                }
+                
+                // Set up click handlers for new items
                 items.forEach((item, idx) => {
-                    const btn = document.getElementById(`browse-add-${idx}`);
+                    const actualIdx = startIdx + idx;
+                    const btn = document.getElementById(`browse-add-${actualIdx}`);
                     if (btn) {
                         btn.addEventListener('click', (e) => { e.stopPropagation(); this.showBrowseAddModal(item); });
                     }
@@ -7177,38 +7239,73 @@ ${document.body.innerHTML}
             }
             
             if (nextCursor) {
-                loadMoreWrap.style.display = 'block';
-                loadMoreBtn.onclick = () => this.showBrowsePage(nextCursor);
+                if (loadMoreWrap) loadMoreWrap.style.display = 'block';
+                if (loadMoreBtn) {
+                    loadMoreBtn.disabled = false;
+                    loadMoreBtn.textContent = 'Load more';
+                    loadMoreBtn.onclick = () => this.showBrowsePage(nextCursor);
+                }
+                
+                // Set up infinite scroll if not already set up
+                if (!this._browseScrollHandler) {
+                    this._browseScrollHandler = () => {
+                        // Check if user is near bottom (within 300px)
+                        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+                        const windowHeight = window.innerHeight;
+                        const docHeight = document.documentElement.scrollHeight;
+                        
+                        if (scrollTop + windowHeight >= docHeight - 300 && !this.browseFeedLoading && nextCursor) {
+                            this.showBrowsePage(nextCursor, true);
+                        }
+                    };
+                    window.addEventListener('scroll', this._browseScrollHandler);
+                }
             } else {
-                loadMoreWrap.style.display = 'none';
+                if (loadMoreWrap) loadMoreWrap.style.display = 'none';
+                // Remove scroll listener when no more items
+                if (this._browseScrollHandler) {
+                    window.removeEventListener('scroll', this._browseScrollHandler);
+                    this._browseScrollHandler = null;
+                }
             }
         } catch (err) {
             console.error('Browse feed error:', err);
             const msg = err && err.message ? err.message : 'Check your connection or try again.';
-            loadingEl.textContent = 'Could not load feed. ' + msg;
-            loadingEl.style.display = 'block';
+            if (loadingEl) {
+                loadingEl.textContent = 'Could not load feed. ' + msg;
+                loadingEl.style.display = 'block';
+            }
+            if (loadMoreBtn) {
+                loadMoreBtn.disabled = false;
+                loadMoreBtn.textContent = 'Load more';
+            }
+        } finally {
+            this.browseFeedLoading = false;
         }
         
-        const tocContainer = document.getElementById('table-of-contents');
-        if (tocContainer) tocContainer.style.display = 'none';
-        const sidebarBookmarks = document.getElementById('sidebar-bookmarks');
-        const sidebarThoughts = document.getElementById('sidebar-thoughts');
-        const sidebarRecentArticles = document.getElementById('sidebar-recent-articles');
-        const sidebarMenu = document.querySelector('.mw-sidebar-menu');
-        if (sidebarBookmarks) sidebarBookmarks.style.display = 'block';
-        if (sidebarThoughts) sidebarThoughts.style.display = 'block';
-        if (sidebarRecentArticles) sidebarRecentArticles.style.display = 'block';
-        if (sidebarMenu) sidebarMenu.style.display = 'block';
-        this.updateRightSidebar();
+        if (!append) {
+            const tocContainer = document.getElementById('table-of-contents');
+            if (tocContainer) tocContainer.style.display = 'none';
+            const sidebarBookmarks = document.getElementById('sidebar-bookmarks');
+            const sidebarThoughts = document.getElementById('sidebar-thoughts');
+            const sidebarRecentArticles = document.getElementById('sidebar-recent-articles');
+            const sidebarMenu = document.querySelector('.mw-sidebar-menu');
+            if (sidebarBookmarks) sidebarBookmarks.style.display = 'block';
+            if (sidebarThoughts) sidebarThoughts.style.display = 'block';
+            if (sidebarRecentArticles) sidebarRecentArticles.style.display = 'block';
+            if (sidebarMenu) sidebarMenu.style.display = 'block';
+            this.updateRightSidebar();
+        }
     }
 
-    showBrowsePostModal(item) {
+    async showBrowsePostModal(item) {
         this._browsePostModalItem = item;
         const modal = document.getElementById('browse-post-modal');
         const titleEl = document.getElementById('browse-post-modal-title');
         const mediaEl = document.getElementById('browse-post-media');
         const textEl = document.getElementById('browse-post-fulltext');
         const replyText = document.getElementById('browse-post-reply-text');
+        const commentsDisplayEl = document.getElementById('browse-post-comments-display');
         if (!modal || !titleEl || !mediaEl || !textEl || !replyText) return;
         titleEl.textContent = item.authorDisplayName ? `@${item.authorHandle} — ${item.authorDisplayName}` : `@${item.authorHandle}`;
         mediaEl.innerHTML = '';
@@ -7228,6 +7325,25 @@ ${document.body.innerHTML}
         const fullText = (item.postText || item.textSnippet || '').trim();
         textEl.textContent = fullText || '(No text)';
         replyText.value = '';
+        
+        // Load and display comments
+        if (commentsDisplayEl && item.postUri) {
+            commentsDisplayEl.innerHTML = '<div style="color: #555; font-size: 0.9rem;">Loading comments...</div>';
+            try {
+                const thread = await this.storage.getBlueskyPostThread(item.postUri);
+                if (thread && thread.replies && thread.replies.length > 0) {
+                    commentsDisplayEl.innerHTML = this.renderBlueskyComments(thread.replies);
+                } else {
+                    commentsDisplayEl.innerHTML = '<div style="color: #555; font-size: 0.9rem; font-style: italic;">No comments yet.</div>';
+                }
+            } catch (e) {
+                console.warn('Failed to load comments:', e);
+                commentsDisplayEl.innerHTML = '<div style="color: #999; font-size: 0.9rem;">Could not load comments.</div>';
+            }
+        } else if (commentsDisplayEl) {
+            commentsDisplayEl.innerHTML = '<div style="color: #555; font-size: 0.9rem; font-style: italic;">No comments yet.</div>';
+        }
+        
         modal.style.display = 'flex';
         const replyBtn = document.getElementById('browse-post-reply-btn');
         replyBtn.onclick = async () => {
@@ -7239,13 +7355,62 @@ ${document.body.innerHTML}
                 await this.storage.postBlueskyReply(item.postUri, text);
                 this.showUpdateNotification('Reply posted!');
                 replyText.value = '';
-                modal.style.display = 'none';
+                // Reload comments after posting
+                if (commentsDisplayEl && item.postUri) {
+                    try {
+                        const thread = await this.storage.getBlueskyPostThread(item.postUri);
+                        if (thread && thread.replies && thread.replies.length > 0) {
+                            commentsDisplayEl.innerHTML = this.renderBlueskyComments(thread.replies);
+                        } else {
+                            commentsDisplayEl.innerHTML = '<div style="color: #555; font-size: 0.9rem; font-style: italic;">No comments yet.</div>';
+                        }
+                    } catch (e) {
+                        console.warn('Failed to reload comments:', e);
+                    }
+                }
+                // Don't close modal, let user see their comment
             } catch (e) {
                 alert('Could not post reply: ' + (e.message || e));
             } finally {
                 replyBtn.disabled = false;
             }
         };
+    }
+    
+    renderBlueskyComments(replies) {
+        if (!replies || replies.length === 0) {
+            return '<div style="color: #555; font-size: 0.9rem; font-style: italic;">No comments yet.</div>';
+        }
+        
+        const renderReply = (reply, depth = 0) => {
+            if (!reply || !reply.post) return '';
+            const post = reply.post;
+            const author = post.author || {};
+            const handle = author.handle || 'unknown';
+            const displayName = author.displayName || handle;
+            const text = (post.record?.text || '').trim();
+            const createdAt = post.record?.createdAt ? new Date(post.record.createdAt).toLocaleString() : '';
+            const indent = depth > 0 ? ` style="margin-left: ${depth * 1.5}em; padding-left: 0.75em; border-left: 2px solid #e5e9ed;"` : '';
+            
+            let nestedReplies = '';
+            if (reply.replies && reply.replies.length > 0) {
+                nestedReplies = reply.replies.map(r => renderReply(r, depth + 1)).join('');
+            }
+            
+            return `
+                <div class="browse-post-comment"${indent} style="margin-bottom: 0.75em; padding: 0.5em; background: #f8f9fa; border-radius: 6px;">
+                    <div style="display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.25em;">
+                        <strong style="font-size: 0.85rem; color: #0645ad;">@${this.escapeHtml(handle)}</strong>
+                        ${displayName !== handle ? `<span style="font-size: 0.85rem; color: #555;">${this.escapeHtml(displayName)}</span>` : ''}
+                        ${createdAt ? `<span style="font-size: 0.75rem; color: #999;">${createdAt}</span>` : ''}
+                    </div>
+                    <div style="font-size: 0.9rem; color: #333; white-space: pre-wrap; word-break: break-word;">${this.escapeHtml(text).replace(/\n/g, '<br>')}</div>
+                    ${nestedReplies}
+                </div>
+            `;
+        };
+        
+        return '<div style="margin-bottom: 1rem;"><strong style="font-size: 0.9rem; display: block; margin-bottom: 0.5em;">Comments</strong>' + replies.map(r => renderReply(r, 0)).join('') + '</div>';
     }
 
     showBrowseAddModal(item) {
