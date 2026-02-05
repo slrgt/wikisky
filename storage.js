@@ -149,15 +149,24 @@ class WikiStorage {
     }
 
     async _deleteArtboardItemOnPDS(rkey) {
+        if (!this.blueskyClient?.accessJwt) return;
+        const resolvedPds = await this._resolvePdsUrlForDid(this.blueskyClient.did);
+        this.blueskyClient.pdsUrl = resolvedPds;
+        const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
+        session.pdsUrl = resolvedPds;
+        localStorage.setItem('bluesky-session', JSON.stringify(session));
+        await this.ensureValidToken();
         const safeRkey = String(rkey).replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 128) || rkey;
-        const res = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.deleteRecord`, {
+        const base = this._pdsBaseForRepo();
+        const url = `${base.replace(/\/$/, '')}/xrpc/com.atproto.repo.deleteRecord`;
+        const res = await this._pdsFetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ repo: this.blueskyClient.did, collection: WikiStorage.ARTBOARD_COLLECTION, rkey: safeRkey })
         });
         if (!res.ok && res.status !== 404) {
             const err = await res.json().catch(() => ({}));
-            throw new Error(err.message || err.error || 'deleteRecord failed');
+            throw new Error(err.message || err.error || 'Failed to delete from PDS');
         }
     }
 
@@ -177,15 +186,24 @@ class WikiStorage {
     }
 
     async _deleteArtboardAlbumOnPDS(rkey) {
+        if (!this.blueskyClient?.accessJwt) return;
+        const resolvedPds = await this._resolvePdsUrlForDid(this.blueskyClient.did);
+        this.blueskyClient.pdsUrl = resolvedPds;
+        const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
+        session.pdsUrl = resolvedPds;
+        localStorage.setItem('bluesky-session', JSON.stringify(session));
+        await this.ensureValidToken();
         const safeRkey = String(rkey).replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 128) || rkey;
-        const res = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.deleteRecord`, {
+        const base = this._pdsBaseForRepo();
+        const url = `${base.replace(/\/$/, '')}/xrpc/com.atproto.repo.deleteRecord`;
+        const res = await this._pdsFetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ repo: this.blueskyClient.did, collection: WikiStorage.ARTBOARD_ALBUM_COLLECTION, rkey: safeRkey })
         });
         if (!res.ok && res.status !== 404) {
             const err = await res.json().catch(() => ({}));
-            throw new Error(err.message || err.error);
+            throw new Error(err.message || err.error || 'Failed to delete album from PDS');
         }
     }
 
@@ -248,8 +266,122 @@ class WikiStorage {
                     if (onlyLocalAlbums.length > 0) await this.syncArchiveToBlueskyIfConnected();
                 }
             }
+            await this.loadBookmarksAndHabitsFromBluesky();
         } catch (e) {
             console.warn('Load archive from Bluesky failed:', e);
+        }
+    }
+
+    /** Fetch a generic com.atproto.repo.record by rkey; returns parsed content object or null. */
+    async _getRepoRecord(rkey) {
+        if (!this.blueskyClient?.accessJwt) return null;
+        const res = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${encodeURIComponent(rkey)}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        const content = data.value?.content;
+        if (typeof content !== 'string') return null;
+        try { return JSON.parse(content); } catch (_) { return null; }
+    }
+
+    /** Create or update a generic com.atproto.repo.record with string content (payload will be JSON.stringified). */
+    async _putRepoRecord(rkey, payload) {
+        if (!this.blueskyClient?.accessJwt) return;
+        await this.ensureValidToken();
+        const record = {
+            $type: 'com.atproto.repo.record',
+            key: rkey,
+            title: rkey,
+            content: JSON.stringify(payload),
+            createdAt: new Date().toISOString()
+        };
+        const body = { repo: this.blueskyClient.did, collection: 'com.atproto.repo.record', rkey, record };
+        const getRes = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${encodeURIComponent(rkey)}`);
+        if (getRes.ok) {
+            const putRes = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.putRecord`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (!putRes.ok) {
+                const err = await putRes.json().catch(() => ({}));
+                throw new Error(err.message || err.error || 'putRecord failed');
+            }
+        } else {
+            const createRes = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.createRecord`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (!createRes.ok) {
+                const err = await createRes.json().catch(() => ({}));
+                throw new Error(err.message || err.error || 'createRecord failed');
+            }
+        }
+    }
+
+    async loadBookmarksAndHabitsFromBluesky() {
+        if (!this.blueskyClient?.accessJwt) return;
+        try {
+            await this.ensureValidToken();
+            const [bookmarksPayload, habitsPayload, habitLogPayload] = await Promise.all([
+                this._getRepoRecord('xoxowiki-bookmarks'),
+                this._getRepoRecord('xoxowiki-habits'),
+                this._getRepoRecord('xoxowiki-habit-log')
+            ]);
+            if (bookmarksPayload && Array.isArray(bookmarksPayload.bookmarks)) {
+                const local = this.getBookmarks();
+                const pdsSet = new Set(bookmarksPayload.bookmarks);
+                const onlyLocal = local.filter(b => !pdsSet.has(b));
+                const merged = [...bookmarksPayload.bookmarks, ...onlyLocal];
+                localStorage.setItem('xoxowiki-bookmarks', JSON.stringify(merged));
+                if (onlyLocal.length > 0) this.syncBookmarksToBluesky().catch(() => {});
+            }
+            if (habitsPayload && Array.isArray(habitsPayload.habits)) {
+                const local = this.getHabits();
+                const pdsSet = new Set(habitsPayload.habits);
+                const onlyLocal = local.filter(h => !pdsSet.has(h));
+                const merged = [...habitsPayload.habits, ...onlyLocal];
+                localStorage.setItem('xoxowiki-habits', JSON.stringify(merged));
+                if (onlyLocal.length > 0) this.syncHabitsToBluesky().catch(() => {});
+            }
+            if (habitLogPayload && habitLogPayload.log && typeof habitLogPayload.log === 'object') {
+                const local = this.getHabitLog();
+                const merged = { ...habitLogPayload.log, ...local };
+                localStorage.setItem('xoxowiki-habit-log', JSON.stringify(merged));
+                this.syncHabitLogToBluesky().catch(() => {});
+            }
+        } catch (e) {
+            console.warn('Load bookmarks/habits from Bluesky failed:', e);
+        }
+    }
+
+    async syncBookmarksToBluesky() {
+        if (!this.blueskyClient?.accessJwt) return;
+        try {
+            const bookmarks = this.getBookmarks();
+            await this._putRepoRecord('xoxowiki-bookmarks', { bookmarks, updatedAt: new Date().toISOString() });
+        } catch (e) {
+            console.warn('Sync bookmarks to Bluesky failed:', e);
+        }
+    }
+
+    async syncHabitsToBluesky() {
+        if (!this.blueskyClient?.accessJwt) return;
+        try {
+            const habits = this.getHabits();
+            await this._putRepoRecord('xoxowiki-habits', { habits, updatedAt: new Date().toISOString() });
+        } catch (e) {
+            console.warn('Sync habits to Bluesky failed:', e);
+        }
+    }
+
+    async syncHabitLogToBluesky() {
+        if (!this.blueskyClient?.accessJwt) return;
+        try {
+            const log = this.getHabitLog();
+            await this._putRepoRecord('xoxowiki-habit-log', { log, updatedAt: new Date().toISOString() });
+        } catch (e) {
+            console.warn('Sync habit log to Bluesky failed:', e);
         }
     }
 
@@ -1164,7 +1296,7 @@ class WikiStorage {
             rkey
         };
         const deleteUrl = `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.deleteRecord`;
-        const checkUrl = () => `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`;
+        const getRecordUrl = `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`;
 
         const doDelete = () => this._pdsFetch(deleteUrl, {
             method: 'POST',
@@ -1173,11 +1305,20 @@ class WikiStorage {
         });
 
         const verifyGone = async () => {
-            const res = await this._pdsFetch(checkUrl());
-            if (!res.ok) return true; // 404 or error = record gone
+            const res = await this._pdsFetch(getRecordUrl);
+            if (res.status === 404) return true; // record not found = gone
+            if (!res.ok) return false; // 401, 5xx, etc. = don't assume gone
             const data = await res.json().catch(() => null);
             return !(data && data.value);
         };
+
+        // Pre-warm: one getRecord before delete so first request in session (e.g. DPoP nonce) is handled here, not on delete
+        try {
+            const preCheck = await this._pdsFetch(getRecordUrl);
+            if (preCheck.status === 404) return; // already gone
+        } catch (_) {
+            // proceed to delete anyway (e.g. network blip on pre-check)
+        }
 
         let res = await doDelete();
         if (!res.ok) {
@@ -1385,6 +1526,7 @@ class WikiStorage {
     saveBookmarks(bookmarks) {
         try {
             localStorage.setItem('xoxowiki-bookmarks', JSON.stringify(bookmarks));
+            if (this.blueskyClient?.accessJwt) this.syncBookmarksToBluesky().catch(() => {});
         } catch (error) {
             console.error('Error saving bookmarks:', error);
         }
@@ -1668,6 +1810,7 @@ class WikiStorage {
 
     saveHabits(habits) {
         localStorage.setItem('xoxowiki-habits', JSON.stringify(habits));
+        if (this.blueskyClient?.accessJwt) this.syncHabitsToBluesky().catch(() => {});
     }
 
     getHabitLog() {
@@ -1679,6 +1822,7 @@ class WikiStorage {
 
     saveHabitLog(log) {
         localStorage.setItem('xoxowiki-habit-log', JSON.stringify(log));
+        if (this.blueskyClient?.accessJwt) this.syncHabitLogToBluesky().catch(() => {});
     }
 
     toggleHabit(date, habit) {
@@ -2555,24 +2699,48 @@ class WikiStorage {
         return { uri: data.uri, cid: data.cid };
     }
 
-    // Get image data URL - AT Protocol URL, imageUrl, disk/IndexedDB, or imageData
-    async getArchiveItemImageData(item) {
-        // 1) External URL (e.g. Bluesky CDN, AT Protocol blob URL) – use as-is for display
-        if (item.imageUrl) {
-            return item.imageUrl;
+    // Fetch a getBlob URL with auth and return an object URL so <img>/<video> can display it (no auth in browser requests)
+    static _blobObjectUrlCache = new Map();
+    async _fetchBlobUrlWithAuth(url) {
+        if (!url || typeof url !== 'string' || !url.includes('getBlob') && !url.includes('sync.getBlob')) return url;
+        if (!this.blueskyClient?.accessJwt) return url;
+        const cached = WikiStorage._blobObjectUrlCache.get(url);
+        if (cached) return cached;
+        try {
+            await this.ensureValidToken();
+            const res = await this._pdsFetch(url);
+            if (!res.ok) return url;
+            const blob = await res.blob();
+            const objectUrl = URL.createObjectURL(blob);
+            WikiStorage._blobObjectUrlCache.set(url, objectUrl);
+            return objectUrl;
+        } catch (e) {
+            console.warn('Failed to fetch blob with auth:', e);
+            return url;
         }
-        // 2) AT Protocol blob ref (image hosted on Bluesky)
-        if (item.atBlobRef) {
+    }
+
+    // Get image data URL - AT Protocol URL, imageUrl, disk/IndexedDB, or imageData. Resolves getBlob URLs with auth when logged in.
+    async getArchiveItemImageData(item) {
+        let imageUrl = null;
+        if (item.imageUrl) {
+            imageUrl = item.imageUrl;
+        } else if (item.atBlobRef) {
             const ref = item.atBlobRef;
             const cid = (typeof ref === 'string' ? ref : ref?.$link ?? ref?.cid) || '';
             const did = item.atBlobRefDid ?? this.blueskyClient?.did;
             if (cid && did) {
                 const cidOnly = typeof cid === 'string' ? cid.replace(/^cid:/, '') : String(cid);
                 const base = (did === this.blueskyClient?.did) ? this._pdsBaseForRepo() : 'https://bsky.social';
-                return `${base}/xrpc/com.atproto.sync.getBlob?did=${encodeURIComponent(did)}&cid=${encodeURIComponent(cidOnly)}`;
+                imageUrl = `${base}/xrpc/com.atproto.sync.getBlob?did=${encodeURIComponent(did)}&cid=${encodeURIComponent(cidOnly)}`;
             }
         }
-        // 3) Local file (disk or IndexedDB)
+        if (imageUrl) {
+            if (imageUrl.includes('getBlob') && this.blueskyClient?.accessJwt) {
+                return await this._fetchBlobUrlWithAuth(imageUrl);
+            }
+            return imageUrl;
+        }
         if (item.filename) {
             try {
                 const file = await this.getFileFromDisk(item.filename);
@@ -2589,6 +2757,16 @@ class WikiStorage {
             }
         }
         return item.imageData || null;
+    }
+
+    // Video URL for archive item; resolves getBlob URLs with auth when logged in so video embeds work after re-login.
+    async getArchiveItemVideoUrl(item) {
+        const url = item.videoUrl || null;
+        if (!url) return null;
+        if (url.includes('getBlob') && this.blueskyClient?.accessJwt) {
+            return await this._fetchBlobUrlWithAuth(url);
+        }
+        return url;
     }
 
     // ===== STORAGE MANAGEMENT =====
@@ -2909,7 +3087,7 @@ class WikiStorage {
 
     async deleteArchiveItem(id) {
         if (this.blueskyClient?.accessJwt) {
-            try { await this._deleteArtboardItemOnPDS(id); } catch (e) { console.warn('Artboard lexicon delete failed:', e); }
+            await this._deleteArtboardItemOnPDS(id);
         }
         const archive = this.getArchive();
         const item = archive.find(a => a.id === id);
@@ -2963,9 +3141,9 @@ class WikiStorage {
         return album;
     }
 
-    deleteAlbum(id) {
+    async deleteAlbum(id) {
         if (this.blueskyClient?.accessJwt) {
-            this._deleteArtboardAlbumOnPDS(id).catch(e => console.warn('Artboard album lexicon delete failed:', e));
+            await this._deleteArtboardAlbumOnPDS(id);
         }
         const albums = this.getAlbums().filter(a => a.id !== id);
         localStorage.setItem('xoxowiki-albums', JSON.stringify(albums));
@@ -2975,7 +3153,7 @@ class WikiStorage {
             return a;
         });
         localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
-        this.syncArchiveToBlueskyIfConnected().catch(() => {});
+        await this.syncArchiveToBlueskyIfConnected();
     }
 
     // ===== SECTION ORDER =====

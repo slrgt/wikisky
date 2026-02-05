@@ -1594,13 +1594,14 @@ class WikiApp {
                         
                         // Load image/video asynchronously
                         setTimeout(() => {
-                            this.loadArchiveItemImage(mediaItem).then(imageData => {
+                            this.loadArchiveItemImage(mediaItem).then(result => {
+                                const { imageData, videoUrl } = this._archiveMediaFromResult(result, mediaItem);
                                 const wrapper = document.querySelector(`.bento-card[data-media-id="${mediaId}"]`);
                                 if (!wrapper) return;
                                 if (mediaItem.type === 'video') {
                                     const videoEl = wrapper.querySelector('video');
                                     if (videoEl) {
-                                        const src = mediaItem.videoUrl || imageData;
+                                        const src = videoUrl || imageData;
                                         if (src) videoEl.src = src;
                                         if (imageData) videoEl.poster = imageData;
                                     }
@@ -1703,11 +1704,12 @@ class WikiApp {
                             
                             // Load image/video asynchronously
                             setTimeout(() => {
-                                this.loadArchiveItemImage(currentItem).then(imageData => {
+                                this.loadArchiveItemImage(currentItem).then(result => {
+                                    const { imageData, videoUrl } = this._archiveMediaFromResult(result, currentItem);
                                     const el = document.querySelector(`[data-album-item-id="${itemId}"]`);
                                     if (!el) return;
                                     if (currentItem.type === 'video') {
-                                        const src = currentItem.videoUrl || imageData;
+                                        const src = videoUrl || imageData;
                                         if (src) el.src = src;
                                         if (imageData) el.poster = imageData;
                                     } else if (imageData) {
@@ -1816,11 +1818,12 @@ class WikiApp {
                                 
                                 // Load image/video asynchronously
                                 setTimeout(() => {
-                                    this.loadArchiveItemImage(randomItem).then(imageData => {
+                                    this.loadArchiveItemImage(randomItem).then(result => {
+                                        const { imageData, videoUrl } = this._archiveMediaFromResult(result, randomItem);
                                         const videoEl = document.querySelector(`[data-random-album-item-id="${itemId}"]`);
                                         if (!videoEl) return;
                                         if (randomItem.type === 'video') {
-                                            const src = randomItem.videoUrl || imageData;
+                                            const src = videoUrl || imageData;
                                             if (src) videoEl.src = src;
                                             if (imageData) videoEl.poster = imageData;
                                         } else if (imageData) {
@@ -1854,13 +1857,14 @@ class WikiApp {
                             
                             // Load image/video asynchronously
                             setTimeout(() => {
-                                this.loadArchiveItemImage(randomItem).then(imageData => {
+                                this.loadArchiveItemImage(randomItem).then(result => {
+                                    const { imageData, videoUrl } = this._archiveMediaFromResult(result, randomItem);
                                     const wrapper = document.querySelector(`.bento-card[data-media-id="${randomItem.id}"]`);
                                     if (!wrapper) return;
                                     if (randomItem.type === 'video') {
                                         const videoEl = wrapper.querySelector('video');
                                         if (videoEl) {
-                                            const src = randomItem.videoUrl || imageData;
+                                            const src = videoUrl || imageData;
                                             if (src) videoEl.src = src;
                                             if (imageData) videoEl.poster = imageData;
                                         }
@@ -5641,11 +5645,12 @@ ${document.body.innerHTML}
             
             // Load thumbnail asynchronously
             setTimeout(() => {
-                this.loadArchiveItemImage(item).then(imageData => {
+                this.loadArchiveItemImage(item).then(result => {
+                    const { imageData, videoUrl } = this._archiveMediaFromResult(result, item);
                     const el = document.querySelector(`[data-media-thumb-id="${itemId}"]`);
                     if (!el) return;
                     if (item.type === 'video') {
-                        const src = item.videoUrl || imageData;
+                        const src = videoUrl || imageData;
                         if (src) el.src = src;
                         if (imageData) el.poster = imageData;
                     } else if (imageData) {
@@ -6589,13 +6594,23 @@ ${document.body.innerHTML}
     // ===== ARCHIVE IMAGE LOADING =====
     async loadArchiveItemImage(item) {
         if (!item) return null;
-        // Try to load from disk first, fallback to imageData
         try {
-            return await this.storage.getArchiveItemImageData(item);
+            const imageData = await this.storage.getArchiveItemImageData(item);
+            if (item.type === 'video') {
+                const videoUrl = await this.storage.getArchiveItemVideoUrl(item);
+                return { imageData, videoUrl: videoUrl || item.videoUrl };
+            }
+            return imageData;
         } catch (error) {
             console.warn('Failed to load image:', error);
-            return item.imageData || null;
+            return item.type === 'video' ? { imageData: item.imageData || null, videoUrl: item.videoUrl || null } : (item.imageData || null);
         }
+    }
+
+    _archiveMediaFromResult(result, item) {
+        if (result == null) return { imageData: null, videoUrl: null };
+        if (typeof result === 'object' && 'videoUrl' in result) return { imageData: result.imageData, videoUrl: result.videoUrl || (item && item.videoUrl) };
+        return { imageData: result, videoUrl: (item && item.videoUrl) || null };
     }
 
     // ===== MEDIA UPLOAD (in Create Modal) =====
@@ -7047,19 +7062,22 @@ ${document.body.innerHTML}
     }
     
     // Alias for consistency
-    deleteAlbum(albumId) {
+    async deleteAlbum(albumId) {
         const albums = this.storage.getAlbums();
         const album = albums.find(a => a.id === albumId);
         if (!album) return;
         
         if (confirm(`Are you sure you want to delete the artboard "${album.name}"? This will remove the artboard but keep all media items.`)) {
-            this.storage.deleteAlbum(albumId);
+            try {
+                await this.storage.deleteAlbum(albumId);
+            } catch (e) {
+                alert('Could not delete artboard from PDS: ' + (e.message || e));
+                return;
+            }
             this.updateAlbumSelect();
-            // Refresh archive page if on it
-            if (this.currentArticleKey === 'archive') {
+            if (this.currentArticleKey === 'archive' || this.currentArticleKey === 'collection') {
                 this.showCollectionPage();
             }
-            // Also refresh bentos if collections bento is visible
             this.renderSections();
         }
     }
@@ -7380,16 +7398,18 @@ ${document.body.innerHTML}
         `;
         }).join('') : '<p class="archive-empty">No items yet. Click the + button to add media!</p>';
         
-        // Load images/videos asynchronously after rendering
+        // Load images/videos asynchronously after rendering (auth-resolved URLs for getBlob so embeds work after re-login)
         setTimeout(() => {
             items.forEach(item => {
-                this.loadArchiveItemImage(item).then(imageData => {
+                this.loadArchiveItemImage(item).then(result => {
+                    const imageData = result && typeof result === 'object' && result.videoUrl !== undefined ? result.imageData : result;
+                    const videoUrl = result && typeof result === 'object' ? result.videoUrl : null;
                     const wrapper = document.querySelector(`.archive-page-item[data-item-id="${item.id}"]`);
                     if (!wrapper) return;
                     if (item.type === 'video') {
                         const videoEl = wrapper.querySelector('video');
                         if (videoEl) {
-                            const src = item.videoUrl || imageData;
+                            const src = videoUrl || item.videoUrl || imageData;
                             if (src) videoEl.src = src;
                             if (imageData) videoEl.poster = imageData;
                         }
@@ -7479,9 +7499,10 @@ ${document.body.innerHTML}
             </label>
         `).join('');
         
-        // Load image/video URL (poster or image data)
-        const imageData = await this.loadArchiveItemImage(item);
-        const videoSrc = item.type === 'video' ? (item.videoUrl || imageData) : '';
+        // Load image/video URL (poster or image data; auth-resolved for getBlob)
+        const mediaResult = await this.loadArchiveItemImage(item);
+        const { imageData, videoUrl } = this._archiveMediaFromResult(mediaResult, item);
+        const videoSrc = item.type === 'video' ? (videoUrl || imageData) : '';
         const postText = (item.postText || item.textSnippet || '').trim();
         const hasAuthor = !!(item.authorHandle || item.authorDid);
         const profileHref = item.source || (item.authorHandle ? `https://bsky.app/profile/${item.authorHandle}` : (item.authorDid ? `https://bsky.app/profile/${item.authorDid}` : ''));
@@ -7561,12 +7582,16 @@ ${document.body.innerHTML}
         this.showUpdateNotification('Item updated!');
     }
 
-    deleteArchiveItem(id) {
-        if (confirm('Delete this item?')) {
-            this.storage.deleteArchiveItem(id);
-            document.getElementById('archive-lightbox')?.remove();
-            this.showCollectionPage();
+    async deleteArchiveItem(id) {
+        if (!confirm('Delete this item?')) return;
+        try {
+            await this.storage.deleteArchiveItem(id);
+        } catch (e) {
+            alert('Could not delete item from PDS: ' + (e.message || e));
+            return;
         }
+        document.getElementById('archive-lightbox')?.remove();
+        this.showCollectionPage();
     }
 
     filterByAlbum(albumId) {
@@ -7693,30 +7718,30 @@ ${document.body.innerHTML}
         }
     }
 
-    deleteSelectedCollectionItems() {
+    async deleteSelectedCollectionItems() {
         const totalSelected = this.selectedCollectionItems.size + this.selectedCollections.size;
         if (totalSelected === 0) return;
         if (!confirm(`Are you sure you want to delete ${totalSelected} item(s)?`)) return;
         
-        // Delete selected collections (albums)
         const collectionsToDelete = Array.from(this.selectedCollections);
-        collectionsToDelete.forEach(albumId => {
-            this.storage.deleteAlbum(albumId);
-        });
-        
-        // Delete selected items
         const itemsToDelete = Array.from(this.selectedCollectionItems);
-        itemsToDelete.forEach(itemId => {
-            this.storage.deleteArchiveItem(itemId);
-        });
+        try {
+            for (const albumId of collectionsToDelete) {
+                await this.storage.deleteAlbum(albumId);
+            }
+            for (const itemId of itemsToDelete) {
+                await this.storage.deleteArchiveItem(itemId);
+            }
+        } catch (e) {
+            alert('Could not delete from PDS: ' + (e.message || e));
+            return;
+        }
         
         this.selectedCollectionItems.clear();
         this.selectedCollections.clear();
         this.collectionEditMode = false;
         
-        // Re-render the page, preserving filter if it wasn't deleted
         const albumFilter = this.currentCollectionFilter || null;
-        // Check if the filtered collection was deleted
         if (albumFilter && collectionsToDelete.includes(albumFilter)) {
             this.showCollectionPage(null);
         } else {
@@ -7771,11 +7796,12 @@ ${document.body.innerHTML}
                 // Load thumbnail asynchronously
                 if (randomItem) {
                     setTimeout(() => {
-                        this.loadArchiveItemImage(randomItem).then(imageData => {
+                        this.loadArchiveItemImage(randomItem).then(result => {
+                            const { imageData, videoUrl } = this._archiveMediaFromResult(result, randomItem);
                             const el = document.querySelector(`[data-album-thumb-id="${itemId}"]`);
                             if (!el) return;
                             if (randomItem.type === 'video') {
-                                const src = randomItem.videoUrl || imageData;
+                                const src = videoUrl || imageData;
                                 if (src) el.src = src;
                                 if (imageData) el.poster = imageData;
                             } else if (imageData) {
@@ -7827,11 +7853,12 @@ ${document.body.innerHTML}
         // Load thumbnails asynchronously
         setTimeout(() => {
             items.forEach(item => {
-                this.loadArchiveItemImage(item).then(imageData => {
+                this.loadArchiveItemImage(item).then(result => {
+                    const { imageData, videoUrl } = this._archiveMediaFromResult(result, item);
                     const el = document.querySelector(`[data-capture-thumb-id="${item.id}"]`);
                     if (!el) return;
                     if (item.type === 'video') {
-                        const src = item.videoUrl || imageData;
+                        const src = videoUrl || imageData;
                         if (src) el.src = src;
                         if (imageData) el.poster = imageData;
                     } else if (imageData) {
