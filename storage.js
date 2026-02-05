@@ -2709,6 +2709,56 @@ class WikiStorage {
         localStorage.setItem('xoxowiki-selected-feed', JSON.stringify(feed));
     }
 
+    // Get saved custom feeds
+    getCustomFeeds() {
+        const stored = localStorage.getItem('xoxowiki-custom-feeds');
+        if (stored) {
+            try {
+                return JSON.parse(stored);
+            } catch (_) {}
+        }
+        return [];
+    }
+
+    // Save custom feed
+    saveCustomFeed(feed) {
+        const feeds = this.getCustomFeeds();
+        // Check if feed already exists
+        if (!feeds.find(f => f.uri === feed.uri)) {
+            feeds.push(feed);
+            localStorage.setItem('xoxowiki-custom-feeds', JSON.stringify(feeds));
+        }
+    }
+
+    // Remove custom feed
+    removeCustomFeed(uri) {
+        const feeds = this.getCustomFeeds();
+        const filtered = feeds.filter(f => f.uri !== uri);
+        localStorage.setItem('xoxowiki-custom-feeds', JSON.stringify(filtered));
+    }
+
+    // Search for Bluesky feed generators
+    async searchFeedGenerators(query, limit = 20) {
+        if (!query || query.trim().length === 0) return [];
+        try {
+            const url = `https://public.api.bsky.app/xrpc/app.bsky.feed.searchFeedGenerators?q=${encodeURIComponent(query.trim())}&limit=${limit}`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error('Failed to search feeds');
+            const data = await response.json();
+            return (data.feeds || []).map(feed => ({
+                uri: feed.uri,
+                name: feed.displayName || feed.name || 'Unnamed Feed',
+                description: feed.description || '',
+                avatar: feed.avatar || null,
+                creator: feed.creator?.handle || feed.creator?.did || null,
+                likeCount: feed.likeCount || 0
+            }));
+        } catch (e) {
+            console.warn('Feed search failed:', e);
+            return [];
+        }
+    }
+
     // Fetch feed from AT Protocol. Supports timeline (when logged in) or custom feed generators.
     // getTimeline is an App View API — use api.bsky.app first so custom PDS users still get a feed.
     async fetchBrowseFeed(cursor = null, limit = 30, feedType = null) {

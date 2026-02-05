@@ -7139,6 +7139,17 @@ ${document.body.innerHTML}
             { type: 'custom', name: 'Discover', description: 'Discover new content', uri: 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/discover' }
         );
         
+        // Add saved custom feeds
+        const customFeeds = this.storage.getCustomFeeds();
+        customFeeds.forEach(feed => {
+            feeds.push({
+                type: 'custom',
+                name: feed.name,
+                description: feed.description || '',
+                uri: feed.uri
+            });
+        });
+        
         return feeds;
     }
 
@@ -7181,15 +7192,22 @@ ${document.body.innerHTML}
         // Only initialize HTML if not appending
         if (!append) {
             const feedSelectorHtml = `
-                <div class="browse-feed-selector" style="margin-bottom: 1em;">
-                    <label for="browse-feed-select" style="font-weight: 600; margin-right: 0.5em; font-size: 0.9rem;">Feed:</label>
-                    <select id="browse-feed-select" style="padding: 0.4em 0.6em; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; background: white; cursor: pointer;">
-                        ${availableFeeds.map(feed => 
-                            `<option value="${feed.type}" data-uri="${feed.uri || ''}" ${selectedFeed.type === feed.type ? 'selected' : ''}>${this.escapeHtml(feed.name)}</option>`
-                        ).join('')}
+                <div class="browse-feed-selector" style="margin-bottom: 1em; display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap;">
+                    <label for="browse-feed-select" style="font-weight: 600; font-size: 0.9rem;">Feed:</label>
+                    <select id="browse-feed-select" style="padding: 0.4em 0.6em; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; background: white; cursor: pointer; min-width: 200px;">
+                        ${availableFeeds.map(feed => {
+                            const isSelected = feed.type === 'timeline' 
+                                ? (selectedFeed.type === 'timeline')
+                                : (selectedFeed.uri && feed.uri && selectedFeed.uri === feed.uri);
+                            return `<option value="${feed.type}" data-uri="${feed.uri || ''}" ${isSelected ? 'selected' : ''}>${this.escapeHtml(feed.name)}</option>`;
+                        }).join('')}
                     </select>
-                    <span class="browse-feed-description" style="margin-left: 0.75em; color: #555; font-size: 0.85rem;">
-                        ${availableFeeds.find(f => f.type === selectedFeed.type)?.description || ''}
+                    <button type="button" id="browse-feed-search-btn" class="btn-secondary" style="font-size: 0.85rem; padding: 0.4em 0.8em;">Search Feeds</button>
+                    <span class="browse-feed-description" style="color: #555; font-size: 0.85rem;">
+                        ${availableFeeds.find(f => {
+                            if (selectedFeed.type === 'timeline') return f.type === 'timeline';
+                            return f.uri && selectedFeed.uri && f.uri === selectedFeed.uri;
+                        })?.description || ''}
                     </span>
                 </div>
             `;
@@ -7220,13 +7238,16 @@ ${document.body.innerHTML}
                     const selectedOption = e.target.options[e.target.selectedIndex];
                     const feedType = selectedOption.value;
                     const feedUri = selectedOption.getAttribute('data-uri') || '';
-                    const feed = availableFeeds.find(f => f.type === feedType);
+                    const feed = availableFeeds.find(f => {
+                        if (feedType === 'timeline') return f.type === 'timeline';
+                        return f.uri === feedUri;
+                    });
                     
                     if (!feed) return;
                     
                     const feedData = feedType === 'timeline' 
                         ? { type: 'timeline', name: feed.name }
-                        : { type: feedType, name: feed.name, uri: feedUri };
+                        : { type: 'custom', name: feed.name, uri: feedUri };
                     
                     this.storage.setSelectedFeed(feedData);
                     if (feedDescription) {
@@ -7236,6 +7257,14 @@ ${document.body.innerHTML}
                     // Reload feed
                     this.browseFeedCursor = null;
                     this.showBrowsePage(null, false);
+                });
+            }
+            
+            // Set up feed search button
+            const feedSearchBtn = document.getElementById('browse-feed-search-btn');
+            if (feedSearchBtn) {
+                feedSearchBtn.addEventListener('click', () => {
+                    this.showFeedSearchModal();
                 });
             }
         }
@@ -7425,9 +7454,9 @@ ${document.body.innerHTML}
                 viewOnBlueskyBtn.target = '_blank';
                 viewOnBlueskyBtn.rel = 'noopener noreferrer';
                 viewOnBlueskyBtn.className = 'btn-secondary';
-                viewOnBlueskyBtn.style.cssText = 'margin-bottom: 1rem; display: inline-block; text-decoration: none;';
+                viewOnBlueskyBtn.style.cssText = 'margin-top: 0.5rem; display: inline-block; text-decoration: none;';
                 viewOnBlueskyBtn.textContent = 'View on Bluesky →';
-                textWrap.insertBefore(viewOnBlueskyBtn, textWrap.querySelector('.browse-post-comments-display'));
+                textWrap.appendChild(viewOnBlueskyBtn);
             } else {
                 viewOnBlueskyBtn.href = blueskyUrl;
             }
@@ -7540,8 +7569,7 @@ ${document.body.innerHTML}
                         ${displayName !== handle ? `<div style="font-size: 0.8rem; color: #555; margin-bottom: 0.15em;">${this.escapeHtml(displayName)}</div>` : ''}
                         ${createdAt ? `<div style="font-size: 0.75rem; color: #999;">${createdAt}</div>` : ''}
                     </div>
-                    <div style="font-size: 0.9rem; color: #333; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; line-height: 1.5; margin-bottom: 0.5em;">${this.escapeHtml(text).replace(/\n/g, '<br>')}</div>
-                    ${blueskyUrl ? `<a href="${blueskyUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 0.75rem; color: #0645ad; text-decoration: none; display: inline-block; margin-top: 0.25em;">View on Bluesky →</a>` : ''}
+                    <div style="font-size: 0.9rem; color: #333; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; line-height: 1.5;">${this.escapeHtml(text).replace(/\n/g, '<br>')}</div>
                     ${nestedReplies}
                 </div>
             `;
@@ -7550,18 +7578,176 @@ ${document.body.innerHTML}
         return '<div style="margin-bottom: 1rem;"><strong style="font-size: 0.9rem; display: block; margin-bottom: 0.75em;">Comments</strong>' + replies.map(r => renderReply(r, 0)).join('') + '</div>';
     }
 
+    async showFeedSearchModal() {
+        // Create or get modal
+        let modal = document.getElementById('browse-feed-search-modal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'browse-feed-search-modal';
+            modal.className = 'article-modal';
+            modal.style.display = 'none';
+            document.body.appendChild(modal);
+        }
+        
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h2>Search Feeds</h2>
+                    <button class="modal-close" id="browse-feed-search-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div style="margin-bottom: 1em;">
+                        <label for="feed-search-input" style="display: block; margin-bottom: 0.5em; font-weight: 600;">Search for feeds:</label>
+                        <div style="display: flex; gap: 0.5em;">
+                            <input type="text" id="feed-search-input" placeholder="e.g. art, photography, tech..." style="flex: 1; padding: 0.5em; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem;">
+                            <button type="button" id="feed-search-btn" class="btn-primary">Search</button>
+                        </div>
+                    </div>
+                    <div id="feed-search-results" style="max-height: 400px; overflow-y: auto;">
+                        <p style="color: #555; font-style: italic; text-align: center; padding: 2em;">Enter a search term to find feeds</p>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        modal.style.display = 'flex';
+        
+        const closeBtn = document.getElementById('browse-feed-search-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                modal.style.display = 'none';
+            });
+        }
+        
+        // Close on backdrop click
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+        
+        const searchInput = document.getElementById('feed-search-input');
+        const searchBtn = document.getElementById('feed-search-btn');
+        const resultsEl = document.getElementById('feed-search-results');
+        
+        const performSearch = async () => {
+            const query = searchInput.value.trim();
+            if (!query) {
+                resultsEl.innerHTML = '<p style="color: #555; font-style: italic; text-align: center; padding: 2em;">Enter a search term to find feeds</p>';
+                return;
+            }
+            
+            resultsEl.innerHTML = '<p style="color: #555; text-align: center; padding: 2em;">Searching...</p>';
+            searchBtn.disabled = true;
+            
+            try {
+                const feeds = await this.storage.searchFeedGenerators(query);
+                if (feeds.length === 0) {
+                    resultsEl.innerHTML = '<p style="color: #555; font-style: italic; text-align: center; padding: 2em;">No feeds found. Try a different search term.</p>';
+                } else {
+                    const customFeeds = this.storage.getCustomFeeds();
+                    const customFeedUris = new Set(customFeeds.map(f => f.uri));
+                    
+                    resultsEl.innerHTML = feeds.map(feed => {
+                        const isSaved = customFeedUris.has(feed.uri);
+                        return `
+                            <div class="feed-search-result" style="padding: 1em; border: 1px solid #e5e9ed; border-radius: 6px; margin-bottom: 0.75em; background: #f8f9fa;">
+                                <div style="display: flex; align-items: flex-start; gap: 0.75em;">
+                                    ${feed.avatar ? `<img src="${feed.avatar}" alt="" style="width: 48px; height: 48px; border-radius: 6px; object-fit: cover;">` : '<div style="width: 48px; height: 48px; border-radius: 6px; background: #e5e9ed; display: flex; align-items: center; justify-content: center; color: #999; font-size: 1.5rem;">📰</div>'}
+                                    <div style="flex: 1; min-width: 0;">
+                                        <div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.25em; word-break: break-word;">${this.escapeHtml(feed.name)}</div>
+                                        ${feed.description ? `<div style="font-size: 0.85rem; color: #555; margin-bottom: 0.5em; word-break: break-word;">${this.escapeHtml(feed.description)}</div>` : ''}
+                                        <div style="display: flex; align-items: center; gap: 1em; font-size: 0.8rem; color: #999;">
+                                            ${feed.creator ? `<span>by @${this.escapeHtml(feed.creator)}</span>` : ''}
+                                            ${feed.likeCount > 0 ? `<span>${feed.likeCount} likes</span>` : ''}
+                                        </div>
+                                    </div>
+                                    <button type="button" class="feed-add-btn ${isSaved ? 'btn-secondary' : 'btn-primary'}" data-feed-uri="${this.escapeHtml(feed.uri)}" data-feed-name="${this.escapeHtml(feed.name)}" data-feed-desc="${this.escapeHtml(feed.description || '')}" style="font-size: 0.85rem; padding: 0.4em 0.8em; white-space: nowrap;">
+                                        ${isSaved ? '✓ Saved' : 'Add'}
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                    
+                    // Add click handlers for add buttons
+                    resultsEl.querySelectorAll('.feed-add-btn').forEach(btn => {
+                        btn.addEventListener('click', async (e) => {
+                            const uri = e.target.getAttribute('data-feed-uri');
+                            const name = e.target.getAttribute('data-feed-name');
+                            const desc = e.target.getAttribute('data-feed-desc');
+                            
+                            if (customFeedUris.has(uri)) {
+                                // Remove feed
+                                this.storage.removeCustomFeed(uri);
+                                this.showUpdateNotification(`Removed "${name}"`);
+                                e.target.textContent = 'Add';
+                                e.target.className = 'feed-add-btn btn-primary';
+                            } else {
+                                // Add feed
+                                this.storage.saveCustomFeed({ uri, name, description: desc });
+                                this.showUpdateNotification(`Added "${name}"`);
+                                e.target.textContent = '✓ Saved';
+                                e.target.className = 'feed-add-btn btn-secondary';
+                            }
+                            
+                            // Reload browse page to update feed list
+                            this.browseFeedCursor = null;
+                            this.showBrowsePage(null, false);
+                        });
+                    });
+                }
+            } catch (e) {
+                resultsEl.innerHTML = `<p style="color: #d32f2f; text-align: center; padding: 2em;">Error searching feeds: ${this.escapeHtml(e.message || 'Unknown error')}</p>`;
+            } finally {
+                searchBtn.disabled = false;
+            }
+        };
+        
+        if (searchBtn) {
+            searchBtn.addEventListener('click', performSearch);
+        }
+        
+        if (searchInput) {
+            searchInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    performSearch();
+                }
+            });
+            searchInput.focus();
+        }
+    }
+
     showBrowseAddModal(item) {
         this._browseAddModalItem = item;
         const modal = document.getElementById('browse-add-modal');
         const listEl = document.getElementById('browse-add-artboard-list');
         const noteEl = document.getElementById('browse-add-note');
+        const descEl = modal.querySelector('.browse-add-desc');
         const newArtboardWrap = document.getElementById('browse-add-new-artboard-wrap');
         const newArtboardNameInput = document.getElementById('browse-add-new-artboard-name');
         const createArtboardBtn = document.getElementById('browse-add-create-artboard-btn');
         if (!modal || !listEl || !noteEl) return;
 
+        // Check if item already exists in archive
+        const archive = this.storage.getArchive();
+        const url = item.videoUrl || item.imageUrl;
+        const existingItem = archive.find(a => {
+            // Match by imageUrl/videoUrl or postUri
+            const urlMatch = (a.imageUrl === url || a.videoUrl === url);
+            const postUriMatch = item.postUri && a.source && a.source.includes(item.postUri.split('/').pop());
+            return urlMatch || postUriMatch;
+        });
+        
+        const existingAlbumIds = existingItem ? (existingItem.albumIds || []) : [];
+        const existingAlbums = existingAlbumIds.length > 0 
+            ? this.storage.getAlbums().filter(a => existingAlbumIds.includes(a.id))
+            : [];
+
         const refreshArtboardList = (checkNewAlbumId = null) => {
             const albums = this.storage.getAlbums();
+            const albumsToCheck = checkNewAlbumId ? [checkNewAlbumId, ...existingAlbumIds] : existingAlbumIds;
+            
             if (albums.length === 0) {
                 listEl.innerHTML = '<p class="browse-add-desc">No artboards yet. Create one below.</p>';
                 if (newArtboardWrap) {
@@ -7570,17 +7756,29 @@ ${document.body.innerHTML}
                     if (label) label.textContent = 'New artboard name';
                 }
             } else {
-                listEl.innerHTML = albums.map(a => `
-                    <label>
-                        <input type="checkbox" name="browse-add-artboard" value="${this.escapeHtml(a.id)}" ${checkNewAlbumId === a.id ? 'checked' : ''}>
-                        <span>${this.escapeHtml(a.name)}</span>
-                    </label>
-                `).join('');
+                listEl.innerHTML = albums.map(a => {
+                    const isChecked = albumsToCheck.includes(a.id);
+                    const isExisting = existingAlbumIds.includes(a.id);
+                    return `
+                        <label style="${isExisting ? 'background: #e8f4f8; padding: 0.5em; border-radius: 4px; border-left: 3px solid #0645ad;' : ''}">
+                            <input type="checkbox" name="browse-add-artboard" value="${this.escapeHtml(a.id)}" ${isChecked ? 'checked' : ''}>
+                            <span>${this.escapeHtml(a.name)}${isExisting ? ' <span style="color: #0645ad; font-size: 0.85em; font-weight: 600;">(already in)</span>' : ''}</span>
+                        </label>
+                    `;
+                }).join('');
                 if (newArtboardWrap) {
                     newArtboardWrap.style.display = 'block';
                     const label = newArtboardWrap.querySelector('label');
                     if (label) label.textContent = 'Or create another artboard:';
                 }
+            }
+            
+            // Update description to show existing collections
+            if (descEl && existingAlbums.length > 0) {
+                const albumNames = existingAlbums.map(a => a.name).join(', ');
+                descEl.innerHTML = `Select which artboard(s) to add this to:<br><small style="color: #0645ad; font-weight: 600;">Already in: ${this.escapeHtml(albumNames)}</small>`;
+            } else if (descEl) {
+                descEl.textContent = 'Select which artboard(s) to add this to:';
             }
         };
 
@@ -7608,24 +7806,43 @@ ${document.body.innerHTML}
             const selected = Array.from(document.querySelectorAll('input[name="browse-add-artboard"]:checked')).map(el => el.value);
             const note = noteEl.value.trim();
             const url = item.videoUrl || item.imageUrl;
-            const archiveItem = {
-                imageUrl: url,
-                name: item.authorHandle ? `@${item.authorHandle}` : 'From feed',
-                type: item.type || 'image',
-                source: item.postUri ? `https://bsky.app/profile/${item.authorHandle}/post/${(item.postUri || '').split('/').pop()}` : '',
-                albumIds: selected,
-                assignmentType: 'albums',
-                articleIds: [],
-                habitDays: [],
-                authorHandle: item.authorHandle,
-                authorDid: item.authorDid,
-                authorDisplayName: item.authorDisplayName,
-                postText: item.postText ?? item.textSnippet
-            };
-            if (note) archiveItem.userNote = note;
+            
             try {
-                await this.storage.saveArchiveItem(archiveItem);
-                this.showUpdateNotification(selected.length ? `Added to ${selected.length} artboard(s).` : 'Added to your archive.');
+                if (existingItem) {
+                    // Item already exists - merge albumIds
+                    const currentAlbumIds = existingItem.albumIds || [];
+                    const mergedAlbumIds = [...new Set([...currentAlbumIds, ...selected])];
+                    const updates = { albumIds: mergedAlbumIds };
+                    if (note && note !== existingItem.userNote) {
+                        updates.userNote = note;
+                    }
+                    await this.storage.updateArchiveItem(existingItem.id, updates);
+                    const newlyAdded = selected.filter(id => !currentAlbumIds.includes(id));
+                    if (newlyAdded.length > 0) {
+                        this.showUpdateNotification(`Added to ${newlyAdded.length} new artboard(s).`);
+                    } else {
+                        this.showUpdateNotification('Item already in selected artboards.');
+                    }
+                } else {
+                    // New item
+                    const archiveItem = {
+                        imageUrl: url,
+                        name: item.authorHandle ? `@${item.authorHandle}` : 'From feed',
+                        type: item.type || 'image',
+                        source: item.postUri ? `https://bsky.app/profile/${item.authorHandle}/post/${(item.postUri || '').split('/').pop()}` : '',
+                        albumIds: selected,
+                        assignmentType: 'albums',
+                        articleIds: [],
+                        habitDays: [],
+                        authorHandle: item.authorHandle,
+                        authorDid: item.authorDid,
+                        authorDisplayName: item.authorDisplayName,
+                        postText: item.postText ?? item.textSnippet
+                    };
+                    if (note) archiveItem.userNote = note;
+                    await this.storage.saveArchiveItem(archiveItem);
+                    this.showUpdateNotification(selected.length ? `Added to ${selected.length} artboard(s).` : 'Added to your archive.');
+                }
                 modal.style.display = 'none';
                 if (this.currentArticleKey === 'collection') this.showCollectionPage(this.currentCollectionFilter);
             } catch (e) {
