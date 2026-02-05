@@ -7350,6 +7350,16 @@ ${document.body.innerHTML}
             const text = replyText.value.trim();
             if (!text) { alert('Please enter a reply.'); return; }
             if (!item.postUri) { alert('This post cannot be replied to.'); return; }
+            
+            // Check if user is logged in to Bluesky
+            const isLoggedIn = this.storage.storageMode === 'bluesky' && this.storage.blueskyClient?.accessJwt;
+            if (!isLoggedIn) {
+                // Close the browse post modal and show Bluesky connection modal
+                modal.style.display = 'none';
+                this.openBlueskyModal();
+                return;
+            }
+            
             replyBtn.disabled = true;
             try {
                 await this.storage.postBlueskyReply(item.postUri, text);
@@ -7370,7 +7380,13 @@ ${document.body.innerHTML}
                 }
                 // Don't close modal, let user see their comment
             } catch (e) {
-                alert('Could not post reply: ' + (e.message || e));
+                // Check if error is due to not being connected
+                if (e.message && e.message.includes('Not connected')) {
+                    modal.style.display = 'none';
+                    this.openBlueskyModal();
+                } else {
+                    alert('Could not post reply: ' + (e.message || e));
+                }
             } finally {
                 replyBtn.disabled = false;
             }
