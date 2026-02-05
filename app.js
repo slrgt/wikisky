@@ -2422,6 +2422,11 @@ class WikiApp {
         
         // Reload articles to ensure we have the latest
         await this.loadArticles();
+        await this.showArticleListWithoutReload();
+    }
+
+    async showArticleListWithoutReload() {
+        const container = document.getElementById('article-container');
         
         const articleKeys = Object.keys(this.articles).sort();
         
@@ -3068,7 +3073,10 @@ class WikiApp {
         this.updateBookmarksDisplay();
         this.updateThoughtsDisplay();
         this.updateRecentArticlesDisplay();
-        this.navigate('articles');
+        
+        // Show article list without reloading from Bluesky (to avoid re-syncing deleted article)
+        this.currentArticleKey = 'articles';
+        await this.showArticleListWithoutReload();
         this.showUpdateNotification('Article deleted');
     }
 

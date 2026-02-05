@@ -1118,22 +1118,41 @@ class WikiStorage {
 
     // Delete article (from PDS first so it fully deletes, then local)
     async deleteArticle(key) {
+        console.log('deleteArticle called:', { key, storageMode: this.storageMode, hasClient: !!this.blueskyClient });
         if (this.storageMode === 'bluesky' && this.blueskyClient) {
             try {
                 await this.deleteArticleFromBluesky(key);
+                console.log('PDS deletion succeeded for:', key);
             } catch (e) {
+                console.error('PDS deletion failed:', e);
                 const isNotFound = e.message && (e.message.includes('NotFound') || e.message.includes('404') || e.message.includes('RecordNotFound'));
-                if (!isNotFound) throw e;
+                if (!isNotFound) {
+                    console.error('Throwing error - not a NotFound error');
+                    throw e;
+                }
+                console.log('PDS deletion NotFound - continuing with local deletion');
             }
         }
+        console.log('Deleting locally:', key);
         await this.deleteArticleFromLocal(key);
+        console.log('Local deletion completed. Articles now:', Object.keys(this.articles));
     }
 
     async deleteArticleFromLocal(key) {
+        const hadArticle = key in this.articles;
         delete this.articles[key];
         // Remove history entries for this article
         this.history = this.history.filter(h => h.articleKey !== key);
         this.saveToLocalStorage();
+        console.log('deleteArticleFromLocal:', { key, hadArticle, stillExists: key in this.articles });
+        // Verify it's actually gone from localStorage
+        const stored = localStorage.getItem('xoxowiki-articles');
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            if (key in parsed) {
+                console.error('ERROR: Article still exists in localStorage after deletion!', key);
+            }
+        }
     }
 
     async deleteArticleFromBluesky(key) {
@@ -1156,23 +1175,32 @@ class WikiStorage {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
+        const verifyDeletion = async (baseUrl) => {
+            try {
+                const checkRes = await this._pdsFetch(`${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`);
+                if (checkRes.ok) {
+                    const checkData = await checkRes.json().catch(() => null);
+                    if (checkData && checkData.value) {
+                        throw new Error(`Delete appeared to succeed but record still exists on PDS (rkey: ${rkey})`);
+                    }
+                }
+                // Record not found (404) = deletion succeeded
+            } catch (checkErr) {
+                if (checkErr.message && checkErr.message.includes('still exists')) throw checkErr;
+                // Other errors (like network) - assume deletion succeeded if HTTP was 200
+            }
+        };
+
         let res = await doDelete(this._pdsBaseForRepo());
+        let deleteBase = this._pdsBaseForRepo();
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             const msg = err.message || err.error || '';
             if (msg.includes('PDS access only') && this._pdsBaseForRepo() !== 'https://bsky.social') {
                 res = await doDelete('https://bsky.social');
                 if (res.ok) {
-                    // Verify deletion succeeded by checking if record still exists
-                    try {
-                        const checkRes = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`);
-                        if (checkRes.ok) {
-                            throw new Error('Delete appeared to succeed but record still exists on PDS');
-                        }
-                    } catch (checkErr) {
-                        if (checkErr.message && checkErr.message.includes('still exists')) throw checkErr;
-                        // Record not found = deletion succeeded
-                    }
+                    deleteBase = 'https://bsky.social';
+                    await verifyDeletion(deleteBase);
                     return;
                 }
             }
@@ -1180,16 +1208,8 @@ class WikiStorage {
             console.error('Delete article error:', { rkey, status: res.status, error: err, pdsBase: this._pdsBaseForRepo() });
             throw new Error(fullMsg);
         }
-        // Verify deletion succeeded by checking if record still exists
-        try {
-            const checkRes = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`);
-            if (checkRes.ok) {
-                throw new Error('Delete appeared to succeed but record still exists on PDS');
-            }
-        } catch (checkErr) {
-            if (checkErr.message && checkErr.message.includes('still exists')) throw checkErr;
-            // Record not found = deletion succeeded
-        }
+        // Verify deletion succeeded
+        await verifyDeletion(deleteBase);
     }
 
     // Export all articles as JSON
