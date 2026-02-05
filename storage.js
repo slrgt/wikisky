@@ -2311,6 +2311,10 @@ class WikiStorage {
         const items = [];
         const list = feed || [];
         const myDid = this.blueskyClient?.did;
+        let ownPostsSkipped = 0;
+        let postsWithoutMedia = 0;
+        let postsProcessed = 0;
+        console.log('Parsing feed items:', { totalFeedItems: list.length, myDid });
         for (const item of list) {
             const post = item.post;
             const author = post?.author;
@@ -2320,9 +2324,18 @@ class WikiStorage {
             const postUri = post?.uri || '';
             const embed = post?.embed;
             const authorDisplayName = author?.displayName;
-            if (!embed || !did) continue;
+            postsProcessed++;
+            if (!embed || !did) {
+                postsWithoutMedia++;
+                continue;
+            }
             // Skip own posts - browse should show posts from people you follow, not your own
-            if (myDid && did === myDid) continue;
+            if (myDid && did === myDid) {
+                ownPostsSkipped++;
+                console.log('Skipping own post:', { handle, did, myDid, match: did === myDid });
+                continue;
+            }
+            console.log('Processing post from:', { handle, did, myDid, isOwn: myDid && did === myDid });
             const imagesList = embed.images && Array.isArray(embed.images) ? embed.images : (embed.media && embed.media.images && Array.isArray(embed.media.images) ? embed.media.images : null);
             if (imagesList) {
                 for (let i = 0; i < imagesList.length; i++) {
@@ -2428,6 +2441,13 @@ class WikiStorage {
                 }
             }
         }
+        console.log('Feed parsing complete:', { 
+            totalFeedItems: list.length, 
+            itemsFound: items.length, 
+            ownPostsSkipped, 
+            postsWithoutMedia, 
+            postsProcessed 
+        });
         return items;
     }
 
@@ -2458,6 +2478,14 @@ class WikiStorage {
                 throw new Error(errMsg);
             }
             const data = await response.json();
+            console.log('Feed response:', { 
+                feedLength: data.feed?.length || 0, 
+                hasCursor: !!data.cursor,
+                samplePost: data.feed?.[0] ? {
+                    author: data.feed[0].post?.author?.handle,
+                    hasEmbed: !!data.feed[0].post?.embed
+                } : null
+            });
             const items = this._parseFeedToBrowseItems(data.feed || []);
             return { items, cursor: data.cursor || null };
         }
