@@ -2543,11 +2543,62 @@ h3:hover .section-actions {
     align-items: center;
     margin-bottom: 0.5em;
     font-size: 13px;
+    gap: 0.5em;
+}
+
+.comment-minimize-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0.2em;
+    display: flex;
+    align-items: center;
+    color: #54595d;
+    flex-shrink: 0;
+}
+
+.comment-minimize-btn:hover {
+    color: #0645ad;
+    background-color: #e8f4f8;
+    border-radius: 2px;
+}
+
+.comment-minimize-spacer {
+    width: 24px;
+    flex-shrink: 0;
+}
+
+.comment-minimized .comment-replies {
+    display: none;
 }
 
 .comment-author {
     color: #0645ad;
     margin-right: 0.5em;
+}
+
+.comment-author.clickable-username {
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.comment-author.clickable-username:hover {
+    color: #003d82;
+}
+
+.comment-reply-count {
+    color: #54595d;
+    font-size: 11px;
+    background-color: #e8f4f8;
+    padding: 0.1em 0.4em;
+    border-radius: 10px;
+    margin-left: 0.5em;
+}
+
+.comment-count {
+    color: #54595d;
+    font-size: 0.8em;
+    font-weight: normal;
 }
 
 .comment-date {
