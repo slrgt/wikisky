@@ -96,7 +96,16 @@ class WikiApp {
         const mediaType = (item.type === 'video') ? 'Video' : 'Image';
         if (item.authorHandle) return `${mediaType} from ${this.escapeHtml('@' + item.authorHandle)}`;
         if (item.authorDid) return `${mediaType} from ${this.escapeHtml('@' + item.authorDid)}`;
-        if (item.source) return 'Source';
+        if (item.source) {
+            try {
+                const url = new URL(item.source);
+                const profileMatch = item.source.match(/bsky\.app\/profile\/([^/]+)/i);
+                if (profileMatch) return `${mediaType} from ${this.escapeHtml('@' + profileMatch[1])}`;
+                return `${mediaType} from ${this.escapeHtml(url.hostname)}`;
+            } catch (_) {
+                return 'Source';
+            }
+        }
         return 'View details';
     }
 
