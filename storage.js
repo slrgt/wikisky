@@ -37,12 +37,190 @@ class WikiStorage {
         }
     }
 
+    // Artboard lexicons: store media links and albums on PDS
+    static ARTBOARD_COLLECTION = 'app.wikisky.artboard';
+    static ARTBOARD_ALBUM_COLLECTION = 'app.wikisky.artboardAlbum';
+
+    _artboardItemToRecord(item) {
+        const postText = (item.postText || item.textSnippet || '').slice(0, 2000);
+        return {
+            $type: 'app.wikisky.artboard',
+            imageUrl: item.imageUrl && item.imageUrl.startsWith('http') ? item.imageUrl : '',
+            videoUrl: (item.videoUrl && item.videoUrl.startsWith('http')) ? item.videoUrl : undefined,
+            type: item.type === 'video' ? 'video' : 'image',
+            source: item.source && item.source.startsWith('http') ? item.source : undefined,
+            name: (item.name || 'Image').slice(0, 512),
+            createdAt: item.createdAt || new Date().toISOString(),
+            authorHandle: item.authorHandle ? String(item.authorHandle).slice(0, 256) : undefined,
+            authorDid: item.authorDid ? String(item.authorDid).slice(0, 128) : undefined,
+            authorDisplayName: item.authorDisplayName ? String(item.authorDisplayName).slice(0, 256) : undefined,
+            postText: postText || undefined,
+            albumIds: Array.isArray(item.albumIds) ? item.albumIds.slice(0, 50).map(s => String(s).slice(0, 128)) : [],
+            articleIds: Array.isArray(item.articleIds) ? item.articleIds.slice(0, 50).map(s => String(s).slice(0, 256)) : undefined,
+            habitDays: Array.isArray(item.habitDays) ? item.habitDays.slice(0, 50).map(s => String(s).slice(0, 32)) : undefined,
+            assignmentType: item.assignmentType || 'albums'
+        };
+    }
+
+    _recordToArtboardItem(rkey, value) {
+        if (!value || typeof value !== 'object') return null;
+        return {
+            id: rkey,
+            name: value.name || 'Image',
+            type: value.type || 'image',
+            source: value.source || null,
+            imageUrl: value.imageUrl || null,
+            videoUrl: value.videoUrl || null,
+            createdAt: value.createdAt || new Date().toISOString(),
+            authorHandle: value.authorHandle || null,
+            authorDid: value.authorDid || null,
+            authorDisplayName: value.authorDisplayName || null,
+            postText: value.postText || null,
+            albumIds: Array.isArray(value.albumIds) ? value.albumIds : [],
+            articleIds: Array.isArray(value.articleIds) ? value.articleIds : [],
+            habitDays: Array.isArray(value.habitDays) ? value.habitDays : [],
+            assignmentType: value.assignmentType || 'albums'
+        };
+    }
+
+    async _loadArtboardFromLexicon() {
+        const did = this.blueskyClient.did;
+        const archive = [];
+        let url = `${this._pdsBase()}/xrpc/com.atproto.repo.listRecords?repo=${did}&collection=${WikiStorage.ARTBOARD_COLLECTION}&limit=100`;
+        let cursor;
+        do {
+            const u = cursor ? `${url}&cursor=${encodeURIComponent(cursor)}` : url;
+            const res = await this._pdsFetch(u);
+            if (!res.ok) break;
+            const data = await res.json();
+            (data.records || []).forEach(r => {
+                const item = this._recordToArtboardItem(r.rkey || r.key, r.value);
+                if (item) archive.push(item);
+            });
+            cursor = data.cursor || null;
+        } while (cursor);
+
+        const albums = [];
+        url = `${this._pdsBase()}/xrpc/com.atproto.repo.listRecords?repo=${did}&collection=${WikiStorage.ARTBOARD_ALBUM_COLLECTION}&limit=100`;
+        cursor = undefined;
+        do {
+            const u = cursor ? `${url}&cursor=${encodeURIComponent(cursor)}` : url;
+            const res = await this._pdsFetch(u);
+            if (!res.ok) break;
+            const data = await res.json();
+            (data.records || []).forEach(r => {
+                const v = r.value;
+                if (v && v.name) albums.push({ id: r.rkey || r.key, name: v.name, createdAt: v.createdAt || new Date().toISOString() });
+            });
+            cursor = data.cursor || null;
+        } while (cursor);
+
+        return { archive, albums };
+    }
+
+    async _createArtboardItemOnPDS(item) {
+        const rkey = String(item.id).replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 128) || item.id;
+        const record = this._artboardItemToRecord(item);
+        const body = { repo: this.blueskyClient.did, collection: WikiStorage.ARTBOARD_COLLECTION, rkey, record };
+        const res = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.createRecord`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            if (err.error !== 'InvalidRequest' && err.message && !err.message.includes('already exists')) throw new Error(err.message || err.error || 'createRecord failed');
+        }
+    }
+
+    async _putArtboardItemOnPDS(item) {
+        const rkey = String(item.id).replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 128) || item.id;
+        const record = this._artboardItemToRecord(item);
+        const body = { repo: this.blueskyClient.did, collection: WikiStorage.ARTBOARD_COLLECTION, rkey, record };
+        const res = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.putRecord`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.message || err.error || 'putRecord failed');
+        }
+    }
+
+    async _deleteArtboardItemOnPDS(rkey) {
+        const safeRkey = String(rkey).replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 128) || rkey;
+        const res = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.deleteRecord`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo: this.blueskyClient.did, collection: WikiStorage.ARTBOARD_COLLECTION, rkey: safeRkey })
+        });
+        if (!res.ok && res.status !== 404) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.message || err.error || 'deleteRecord failed');
+        }
+    }
+
+    async _createArtboardAlbumOnPDS(album) {
+        const rkey = String(album.id).replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 128) || album.id;
+        const record = { $type: 'app.wikisky.artboardAlbum', name: (album.name || '').slice(0, 256), createdAt: album.createdAt || new Date().toISOString() };
+        const body = { repo: this.blueskyClient.did, collection: WikiStorage.ARTBOARD_ALBUM_COLLECTION, rkey, record };
+        const res = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.createRecord`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            if (err.error !== 'InvalidRequest' && err.message && !err.message.includes('already exists')) throw new Error(err.message || err.error);
+        }
+    }
+
+    async _deleteArtboardAlbumOnPDS(rkey) {
+        const safeRkey = String(rkey).replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 128) || rkey;
+        const res = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.deleteRecord`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo: this.blueskyClient.did, collection: WikiStorage.ARTBOARD_ALBUM_COLLECTION, rkey: safeRkey })
+        });
+        if (!res.ok && res.status !== 404) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.message || err.error);
+        }
+    }
+
     async loadArchiveFromBluesky() {
         if (!this.blueskyClient?.accessJwt) return;
         try {
             await this.ensureValidToken();
-            const res = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
             const localArchive = this.getArchive();
+            const localAlbums = this.getAlbums();
+
+            try {
+                const { archive: lexiconArchive, albums: lexiconAlbums } = await this._loadArtboardFromLexicon();
+                if (lexiconArchive.length > 0 || lexiconAlbums.length > 0) {
+                    const pdsIds = new Set(lexiconArchive.map(a => a.id));
+                    const onlyLocal = localArchive.filter(a => !pdsIds.has(a.id));
+                    const merged = [...lexiconArchive, ...onlyLocal];
+                    localStorage.setItem('xoxowiki-archive', JSON.stringify(merged));
+                    for (const it of onlyLocal) {
+                        try { await this._createArtboardItemOnPDS(it); } catch (_) {}
+                    }
+                    const pdsAlbumIds = new Set(lexiconAlbums.map(a => a.id));
+                    const onlyLocalAlbums = localAlbums.filter(a => !pdsAlbumIds.has(a.id));
+                    const mergedAlbums = [...lexiconAlbums, ...onlyLocalAlbums];
+                    localStorage.setItem('xoxowiki-albums', JSON.stringify(mergedAlbums));
+                    for (const al of onlyLocalAlbums) {
+                        try { await this._createArtboardAlbumOnPDS(al); } catch (_) {}
+                    }
+                    if (onlyLocal.length > 0 || onlyLocalAlbums.length > 0) await this.syncArchiveToBlueskyIfConnected();
+                    return;
+                }
+            } catch (e) {
+                console.warn('Load artboard from lexicon failed, trying legacy:', e);
+            }
+
+            const res = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
             if (!res.ok) {
                 if (localArchive.length > 0) await this.syncArchiveToBlueskyIfConnected();
                 return;
@@ -63,7 +241,6 @@ class WikiStorage {
                     localStorage.setItem('xoxowiki-archive', JSON.stringify([]));
                 }
                 if (payload.albums && Array.isArray(payload.albums)) {
-                    const localAlbums = JSON.parse(localStorage.getItem('xoxowiki-albums') || '[]');
                     const pdsAlbumIds = new Set((payload.albums || []).map(a => a.id));
                     const onlyLocalAlbums = localAlbums.filter(a => !pdsAlbumIds.has(a.id));
                     const mergedAlbums = [...(payload.albums || []), ...onlyLocalAlbums];
@@ -138,7 +315,8 @@ class WikiStorage {
                                     handle: session.handle,
                                     accessJwt: data.accessJwt,
                                     refreshJwt: data.refreshJwt,
-                                    tokenTimestamp: Date.now()
+                                    tokenTimestamp: Date.now(),
+                                    pdsUrl: session.pdsUrl || null
                                 };
                                 this.storageMode = 'bluesky';
                                 session.refreshJwt = data.refreshJwt;
@@ -158,6 +336,12 @@ class WikiStorage {
                         this.storageMode = 'local';
                     }
                 }
+            }
+            if (this.blueskyClient && !this.blueskyClient.pdsUrl) {
+                this.blueskyClient.pdsUrl = await this._resolvePdsUrlForDid(this.blueskyClient.did);
+                const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
+                session.pdsUrl = this.blueskyClient.pdsUrl;
+                localStorage.setItem('bluesky-session', JSON.stringify(session));
             }
         } catch (error) {
             console.error('Error loading Bluesky connection:', error);
@@ -209,14 +393,17 @@ class WikiStorage {
         const data = await res.json();
         const newNonce = res.headers.get('dpop-nonce') || res.headers.get('DPoP-Nonce');
         if (newNonce) localStorage.setItem('bluesky-dpop-nonce', newNonce);
+        const pdsUrl = session.pdsUrl || await this._resolvePdsUrlForDid(session.did);
         this.blueskyClient = {
             did: session.did,
             handle: session.handle,
             accessJwt: data.access_token,
             refreshJwt: data.refresh_token,
-            tokenTimestamp: Date.now()
+            tokenTimestamp: Date.now(),
+            pdsUrl
         };
         session.refreshJwt = data.refresh_token;
+        session.pdsUrl = pdsUrl;
         localStorage.setItem('bluesky-session', JSON.stringify(session));
         this.storageMode = 'bluesky';
     }
@@ -481,18 +668,21 @@ class WikiStorage {
             if (!accessToken || !refreshToken || !sub) throw new Error('Invalid token response');
 
             localStorage.setItem('bluesky-oauth-dpop-private-jwk', privateJwk);
+            const pdsUrl = await this._resolvePdsUrlForDid(sub);
             this.blueskyClient = {
                 did: sub,
                 handle: handle || sub,
                 accessJwt: accessToken,
                 refreshJwt: refreshToken,
-                tokenTimestamp: Date.now()
+                tokenTimestamp: Date.now(),
+                pdsUrl
             };
             localStorage.setItem('bluesky-session', JSON.stringify({
                 handle: this.blueskyClient.handle,
                 did: this.blueskyClient.did,
                 refreshJwt: this.blueskyClient.refreshJwt,
-                oauth: true
+                oauth: true,
+                pdsUrl
             }));
             sessionStorage.removeItem('bluesky-oauth-state');
             sessionStorage.removeItem('bluesky-oauth-code-verifier');
@@ -543,20 +733,22 @@ class WikiStorage {
             }
 
             const data = await response.json();
+            const pdsUrl = await this._resolvePdsUrlForDid(data.did);
             this.blueskyClient = {
                 did: data.did,
                 handle: data.handle,
                 accessJwt: data.accessJwt,
                 refreshJwt: data.refreshJwt,
-                email: data.email || null
+                email: data.email || null,
+                pdsUrl
             };
 
             if (saveCredentials) {
-                // Store only handle, not password (for security)
                 localStorage.setItem('bluesky-session', JSON.stringify({
                     handle: handle,
                     did: data.did,
-                    refreshJwt: data.refreshJwt
+                    refreshJwt: data.refreshJwt,
+                    pdsUrl
                 }));
             }
 
@@ -628,7 +820,7 @@ class WikiStorage {
             const articleRkeys = [];
             let cursor = undefined;
             do {
-                let url = `https://bsky.social/xrpc/com.atproto.repo.listRecords?repo=${did}&collection=site.standard.document&limit=100`;
+                let url = `${this._pdsBase()}/xrpc/com.atproto.repo.listRecords?repo=${did}&collection=site.standard.document&limit=100`;
                 if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
                 const res = await this._pdsFetch(url);
                 if (!res.ok) break;
@@ -645,7 +837,7 @@ class WikiStorage {
             let archiveHasRecord = false;
             let archiveItemCount = 0;
             let archiveAlbumCount = 0;
-            const archiveRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
+            const archiveRes = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
             if (archiveRes.ok) {
                 const archiveData = await archiveRes.json();
                 const content = archiveData.value?.content;
@@ -684,6 +876,25 @@ class WikiStorage {
     _isOAuthSession() {
         const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
         return !!session.oauth && !!localStorage.getItem('bluesky-oauth-dpop-private-jwk');
+    }
+
+    /** PDS base URL for the current user (OAuth tokens are valid only for this resource). */
+    _pdsBase() {
+        const base = this.blueskyClient?.pdsUrl || 'https://bsky.social';
+        return base.replace(/\/$/, '');
+    }
+
+    /** Resolve PDS URL from DID document (required for OAuth: token is bound to this resource). */
+    async _resolvePdsUrlForDid(did) {
+        try {
+            const res = await fetch(`https://plc.directory/${encodeURIComponent(did)}`);
+            if (!res.ok) return 'https://bsky.social';
+            const didDoc = await res.json();
+            const url = didDoc.service?.[0]?.serviceEndpoint || 'https://bsky.social';
+            return typeof url === 'string' ? url.replace(/\/$/, '') : 'https://bsky.social';
+        } catch (_) {
+            return 'https://bsky.social';
+        }
     }
 
     async _pdsFetch(url, options = {}) {
@@ -742,7 +953,7 @@ class WikiStorage {
             const articles = {};
             let cursor = undefined;
             do {
-                let url = `https://bsky.social/xrpc/com.atproto.repo.listRecords?repo=${this.blueskyClient.did}&collection=site.standard.document&limit=100`;
+                let url = `${this._pdsBase()}/xrpc/com.atproto.repo.listRecords?repo=${this.blueskyClient.did}&collection=site.standard.document&limit=100`;
                 if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
                 const response = await this._pdsFetch(url);
                 if (!response.ok) return Object.keys(articles).length ? articles : {};
@@ -790,7 +1001,7 @@ class WikiStorage {
 
     async getArticleFromBluesky(key) {
         try {
-            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(key)}`);
+            const response = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(key)}`);
 
             if (!response.ok) {
                 return null;
@@ -856,7 +1067,7 @@ class WikiStorage {
         const existing = await this.getArticleFromBluesky(key);
 
         if (existing) {
-            const putRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
+            const putRes = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.putRecord`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -871,7 +1082,7 @@ class WikiStorage {
                 throw new Error(err.message || err.error || 'Failed to save to Bluesky');
             }
         } else {
-            const createRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
+            const createRes = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.createRecord`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -909,7 +1120,7 @@ class WikiStorage {
 
     async deleteArticleFromBluesky(key) {
         await this.ensureValidToken();
-        const res = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.deleteRecord`, {
+        const res = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.deleteRecord`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1185,10 +1396,10 @@ class WikiStorage {
 
             // Check if record exists
             try {
-                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=webcomic-pages`);
+                await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=webcomic-pages`);
 
                 // Update existing
-                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
+                await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.putRecord`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1200,7 +1411,7 @@ class WikiStorage {
                 });
             } catch (e) {
                 // Create new
-                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
+                await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.createRecord`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1218,7 +1429,7 @@ class WikiStorage {
     async loadWebcomicPagesFromBluesky() {
         try {
             await this.ensureValidToken();
-            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=webcomic-pages`);
+            const response = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=webcomic-pages`);
 
             if (response.ok) {
                 const data = await response.json();
@@ -1295,10 +1506,10 @@ class WikiStorage {
             const rkey = `webcomic-progress-${userId}`;
             
             try {
-                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${rkey}`);
+                await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${rkey}`);
 
                 // Update existing
-                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.putRecord`, {
+                await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.putRecord`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1310,7 +1521,7 @@ class WikiStorage {
                 });
             } catch (e) {
                 // Create new
-                await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.createRecord`, {
+                await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.createRecord`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1330,7 +1541,7 @@ class WikiStorage {
             await this.ensureValidToken();
             const userId = this.blueskyClient.did;
             const rkey = `webcomic-progress-${userId}`;
-            const response = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${rkey}`);
+            const response = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=${rkey}`);
 
             if (response.ok) {
                 const data = await response.json();
@@ -1835,7 +2046,7 @@ class WikiStorage {
         const ext = this._blobExtensionFromMime(mimeType);
         const formData = new FormData();
         formData.append('file', blob, `media.${ext}`);
-        const response = await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.uploadBlob', {
+        const response = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.uploadBlob`, {
             method: 'POST',
             body: formData
         });
@@ -1854,7 +2065,8 @@ class WikiStorage {
         const repoDid = did || this.blueskyClient?.did;
         if (!cid || !repoDid) return null;
         const cidOnly = String(cid).replace(/^cid:/, '');
-        return `https://bsky.social/xrpc/com.atproto.sync.getBlob?did=${encodeURIComponent(repoDid)}&cid=${encodeURIComponent(cidOnly)}`;
+        const base = (repoDid === this.blueskyClient?.did) ? this._pdsBase() : 'https://bsky.social';
+        return `${base}/xrpc/com.atproto.sync.getBlob?did=${encodeURIComponent(repoDid)}&cid=${encodeURIComponent(cidOnly)}`;
     }
 
     // Parse a bsky.app post URL to get handle and rkey. Returns null if not a valid post URL.
@@ -2080,10 +2292,27 @@ class WikiStorage {
     // Fetch feed from AT Protocol. When logged in, uses your Bluesky timeline; otherwise public "what's hot".
     async fetchBrowseFeed(cursor = null, limit = 30) {
         if (this.blueskyClient?.accessJwt) {
-            let url = `https://bsky.social/xrpc/app.bsky.feed.getTimeline?limit=${limit}`;
-            if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
-            const response = await this._pdsFetch(url);
-            if (!response.ok) throw new Error('Failed to load your feed');
+            const buildUrl = (base) => {
+                let u = `${base}/xrpc/app.bsky.feed.getTimeline?limit=${limit}`;
+                if (cursor) u += `&cursor=${encodeURIComponent(cursor)}`;
+                return u;
+            };
+            let response = await this._pdsFetch(buildUrl(this._pdsBase()));
+            if (!response.ok) {
+                const errBody = await response.json().catch(() => ({}));
+                const errMsg = errBody.message || errBody.error || `HTTP ${response.status}`;
+                if (this._pdsBase() !== 'https://api.bsky.app') {
+                    try {
+                        const appViewRes = await this._pdsFetch(buildUrl('https://api.bsky.app'));
+                        if (appViewRes.ok) {
+                            const data = await appViewRes.json();
+                            const items = this._parseFeedToBrowseItems(data.feed || []);
+                            return { items, cursor: data.cursor || null };
+                        }
+                    } catch (_) {}
+                }
+                throw new Error(errMsg);
+            }
             const data = await response.json();
             const items = this._parseFeedToBrowseItems(data.feed || []);
             return { items, cursor: data.cursor || null };
@@ -2111,7 +2340,8 @@ class WikiStorage {
             const did = item.atBlobRefDid ?? this.blueskyClient?.did;
             if (cid && did) {
                 const cidOnly = typeof cid === 'string' ? cid.replace(/^cid:/, '') : String(cid);
-                return `https://bsky.social/xrpc/com.atproto.sync.getBlob?did=${encodeURIComponent(did)}&cid=${encodeURIComponent(cidOnly)}`;
+                const base = (did === this.blueskyClient?.did) ? this._pdsBase() : 'https://bsky.social';
+                return `${base}/xrpc/com.atproto.sync.getBlob?did=${encodeURIComponent(did)}&cid=${encodeURIComponent(cidOnly)}`;
             }
         }
         // 3) Local file (disk or IndexedDB)
@@ -2258,6 +2488,9 @@ class WikiStorage {
                 const archive = this.getArchive();
                 archive.unshift(metadata);
                 localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+                if (this.blueskyClient?.accessJwt) {
+                    try { await this._createArtboardItemOnPDS(metadata); } catch (e) { console.warn('Artboard lexicon create failed:', e); }
+                }
                 await this.syncArchiveToBlueskyIfConnected();
                 return item;
             }
@@ -2301,6 +2534,9 @@ class WikiStorage {
                     if (pt) metadata.postText = pt;
                     archive.unshift(metadata);
                     localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+                    if (this.blueskyClient?.accessJwt) {
+                        try { await this._createArtboardItemOnPDS(metadata); } catch (e) { console.warn('Artboard lexicon create failed:', e); }
+                    }
                     await this.syncArchiveToBlueskyIfConnected();
                     return item;
                 }
@@ -2354,6 +2590,9 @@ class WikiStorage {
             if (pt) metadata.postText = pt;
             archive.unshift(metadata);
             localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+            if (this.blueskyClient?.accessJwt) {
+                try { await this._createArtboardItemOnPDS(metadata); } catch (e) { console.warn('Artboard lexicon create failed:', e); }
+            }
             return item;
         } catch (error) {
             console.error('Error saving archive item:', error);
@@ -2411,10 +2650,10 @@ class WikiStorage {
                 content: JSON.stringify(payload),
                 createdAt: new Date().toISOString()
             };
-            const getRes = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
+            const getRes = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
             const body = { repo: this.blueskyClient.did, collection: 'com.atproto.repo.record', rkey: 'xoxowiki-archive', record };
             if (getRes.ok) {
-                const putRes = await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.putRecord', {
+                const putRes = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.putRecord`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
@@ -2424,7 +2663,7 @@ class WikiStorage {
                     throw new Error(err.message || err.error || `putRecord ${putRes.status}`);
                 }
             } else {
-                const createRes = await this._pdsFetch('https://bsky.social/xrpc/com.atproto.repo.createRecord', {
+                const createRes = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.createRecord`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
@@ -2440,14 +2679,14 @@ class WikiStorage {
     }
 
     async deleteArchiveItem(id) {
+        if (this.blueskyClient?.accessJwt) {
+            try { await this._deleteArtboardItemOnPDS(id); } catch (e) { console.warn('Artboard lexicon delete failed:', e); }
+        }
         const archive = this.getArchive();
         const item = archive.find(a => a.id === id);
-        
-        // Delete file from disk if it exists
         if (item && item.filename) {
             await this.deleteFileFromDisk(item.filename);
         }
-        
         const filtered = archive.filter(a => a.id !== id);
         localStorage.setItem('xoxowiki-archive', JSON.stringify(filtered));
         await this.syncArchiveToBlueskyIfConnected();
@@ -2459,6 +2698,9 @@ class WikiStorage {
         if (idx !== -1) {
             archive[idx] = { ...archive[idx], ...updates };
             localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+            if (this.blueskyClient?.accessJwt) {
+                this._putArtboardItemOnPDS(archive[idx]).catch(e => console.warn('Artboard lexicon update failed:', e));
+            }
             this.syncArchiveToBlueskyIfConnected().catch(() => {});
         }
     }
@@ -2485,23 +2727,22 @@ class WikiStorage {
         album.createdAt = new Date().toISOString();
         albums.push(album);
         localStorage.setItem('xoxowiki-albums', JSON.stringify(albums));
+        if (this.blueskyClient?.accessJwt) {
+            this._createArtboardAlbumOnPDS(album).catch(e => console.warn('Artboard album lexicon create failed:', e));
+        }
         this.syncArchiveToBlueskyIfConnected().catch(() => {});
         return album;
     }
 
     deleteAlbum(id) {
+        if (this.blueskyClient?.accessJwt) {
+            this._deleteArtboardAlbumOnPDS(id).catch(e => console.warn('Artboard album lexicon delete failed:', e));
+        }
         const albums = this.getAlbums().filter(a => a.id !== id);
         localStorage.setItem('xoxowiki-albums', JSON.stringify(albums));
-        // Also remove album association from archive items (support both old albumId and new albumIds array)
         const archive = this.getArchive().map(a => {
-            // Handle old single albumId format
-            if (a.albumId === id) {
-                a.albumId = null;
-            }
-            // Handle new albumIds array format
-            if (a.albumIds && Array.isArray(a.albumIds)) {
-                a.albumIds = a.albumIds.filter(albumId => albumId !== id);
-            }
+            if (a.albumId === id) a.albumId = null;
+            if (a.albumIds && Array.isArray(a.albumIds)) a.albumIds = a.albumIds.filter(albumId => albumId !== id);
             return a;
         });
         localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));

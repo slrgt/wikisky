@@ -1,0 +1,88 @@
+{
+  "lexicon": 1,
+  "id": "app.wikisky.artboard",
+  "description": "Artboard media items: links to images and videos saved from Bluesky.",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A single media link saved to an artboard (from Bluesky or any URL).",
+      "key": "item",
+      "record": {
+        "type": "object",
+        "required": ["imageUrl", "createdAt"],
+        "properties": {
+          "imageUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL of the image (embed or thumbnail)."
+          },
+          "videoUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL of the video, if type is video."
+          },
+          "type": {
+            "type": "string",
+            "knownValues": ["image", "video"],
+            "description": "Media type."
+          },
+          "source": {
+            "type": "string",
+            "format": "uri",
+            "description": "Source post or page URL (e.g. Bluesky post)."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 512,
+            "description": "Display name for the item."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When the item was added."
+          },
+          "authorHandle": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Bluesky handle of the post author."
+          },
+          "authorDid": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "DID of the post author."
+          },
+          "authorDisplayName": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Display name of the author."
+          },
+          "postText": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Snippet of the post text."
+          },
+          "albumIds": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 128 },
+            "description": "IDs of artboard albums this item belongs to."
+          },
+          "articleIds": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 256 },
+            "description": "Article keys this item is assigned to."
+          },
+          "habitDays": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 32 },
+            "description": "Habit day keys this item is assigned to."
+          },
+          "assignmentType": {
+            "type": "string",
+            "knownValues": ["albums", "articles", "habit-days"],
+            "description": "Primary assignment type."
+          }
+        }
+      }
+    }
+  }
+}
