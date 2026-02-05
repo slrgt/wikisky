@@ -1331,10 +1331,12 @@ class WikiStorage {
             throw new Error(`PDS (${pdsHost}) returned ${res.status}: ${msg || errCode || 'Could not delete record'}. rkey: ${rkey}`);
         }
 
-        // Verify the record is gone; some PDS may have brief eventual consistency
+        // Verify the record is gone; some PDS (e.g. discina) have replication lag so we retry with backoff
+        const backoffMs = [400, 800, 1600, 3200];
         let gone = await verifyGone();
-        if (!gone) {
-            await new Promise(r => setTimeout(r, 400));
+        for (const delay of backoffMs) {
+            if (gone) break;
+            await new Promise(r => setTimeout(r, delay));
             gone = await verifyGone();
         }
         if (!gone) {
@@ -1344,13 +1346,15 @@ class WikiStorage {
                 throw new Error(err.message || err.error || `Delete failed (${res.status}). rkey: ${rkey}`);
             }
             gone = await verifyGone();
-            if (!gone) {
-                await new Promise(r => setTimeout(r, 400));
+            for (const delay of backoffMs) {
+                if (gone) break;
+                await new Promise(r => setTimeout(r, delay));
                 gone = await verifyGone();
             }
         }
+        // Delete was accepted (2xx); if verification still fails, treat as success and rely on eventual consistency
         if (!gone) {
-            throw new Error(`Delete was accepted but record still exists on PDS. Try again or check PDS (${baseUrl}).`);
+            console.warn(`Delete accepted for rkey ${rkey} but getRecord still sees it (PDS replication lag?). Record should disappear shortly.`, baseUrl);
         }
     }
 
