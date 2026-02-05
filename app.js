@@ -7142,6 +7142,30 @@ ${document.body.innerHTML}
         return feeds;
     }
 
+    formatRelativeTime(dateString) {
+        if (!dateString) return '';
+        const date = new Date(dateString);
+        if (isNaN(date.getTime())) return '';
+        
+        const now = new Date();
+        const diffMs = now - date;
+        const diffSecs = Math.floor(diffMs / 1000);
+        const diffMins = Math.floor(diffSecs / 60);
+        const diffHours = Math.floor(diffMins / 60);
+        const diffDays = Math.floor(diffHours / 24);
+        const diffWeeks = Math.floor(diffDays / 7);
+        const diffMonths = Math.floor(diffDays / 30);
+        const diffYears = Math.floor(diffDays / 365);
+        
+        if (diffSecs < 60) return 'just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        if (diffDays < 7) return `${diffDays}d ago`;
+        if (diffWeeks < 4) return `${diffWeeks}w ago`;
+        if (diffMonths < 12) return `${diffMonths}mo ago`;
+        return `${diffYears}y ago`;
+    }
+
     async showBrowsePage(cursor = null, append = false) {
         const container = document.getElementById('article-container');
         if (!container) return;
@@ -7254,13 +7278,17 @@ ${document.body.innerHTML}
                     const author = (item.authorHandle || '').replace(/"/g, '&quot;');
                     const text = (item.textSnippet || '').replace(/"/g, '&quot;').slice(0, 80);
                     const addId = `browse-add-${actualIdx}`;
+                    const relativeTime = item.createdAt ? this.formatRelativeTime(item.createdAt) : '';
                     return `
                         <div class="archive-page-item browse-item browse-item-clickable" data-browse-index="${actualIdx}">
                             ${item.type === 'video'
                                 ? `<video src="${url}" class="browse-media" muted loop playsinline></video>`
                                 : `<img src="${thumbUrl}" alt="${item.alt || ''}" class="browse-media" loading="lazy">`}
                             <div class="browse-item-info">
-                                <span class="browse-author">@${author}</span>
+                                <div class="browse-author-row">
+                                    <span class="browse-author">@${author}</span>
+                                    ${relativeTime ? `<span class="browse-time">${relativeTime}</span>` : ''}
+                                </div>
                                 ${text ? `<p class="browse-snippet">${this.escapeHtml(text)}${(item.textSnippet || '').length > 80 ? '…' : ''}</p>` : ''}
                                 <button type="button" class="btn-primary btn-small browse-add-btn" id="${addId}" data-image-url="${this.escapeHtml(url)}" data-author="${this.escapeHtml(author)}">Add to collection</button>
                             </div>
@@ -7382,6 +7410,31 @@ ${document.body.innerHTML}
         textEl.textContent = fullText || '(No text)';
         replyText.value = '';
         
+        // Add "View on Bluesky" button if postUri is available
+        const textWrap = document.querySelector('.browse-post-text-wrap');
+        let viewOnBlueskyBtn = document.getElementById('browse-post-view-bluesky-btn');
+        if (item.postUri && textWrap) {
+            // Build Bluesky URL
+            const rkey = item.postUri.split('/').pop();
+            const blueskyUrl = `https://bsky.app/profile/${item.authorHandle}/post/${rkey}`;
+            
+            if (!viewOnBlueskyBtn) {
+                viewOnBlueskyBtn = document.createElement('a');
+                viewOnBlueskyBtn.id = 'browse-post-view-bluesky-btn';
+                viewOnBlueskyBtn.href = blueskyUrl;
+                viewOnBlueskyBtn.target = '_blank';
+                viewOnBlueskyBtn.rel = 'noopener noreferrer';
+                viewOnBlueskyBtn.className = 'btn-secondary';
+                viewOnBlueskyBtn.style.cssText = 'margin-bottom: 1rem; display: inline-block; text-decoration: none;';
+                viewOnBlueskyBtn.textContent = 'View on Bluesky →';
+                textWrap.insertBefore(viewOnBlueskyBtn, textWrap.querySelector('.browse-post-comments-display'));
+            } else {
+                viewOnBlueskyBtn.href = blueskyUrl;
+            }
+        } else if (viewOnBlueskyBtn) {
+            viewOnBlueskyBtn.remove();
+        }
+        
         // Load and display comments
         if (commentsDisplayEl && item.postUri) {
             commentsDisplayEl.innerHTML = '<div style="color: #555; font-size: 0.9rem;">Loading comments...</div>';
@@ -7462,27 +7515,39 @@ ${document.body.innerHTML}
             const displayName = author.displayName || handle;
             const text = (post.record?.text || '').trim();
             const createdAt = post.record?.createdAt ? new Date(post.record.createdAt).toLocaleString() : '';
-            const indent = depth > 0 ? ` style="margin-left: ${depth * 1.5}em; padding-left: 0.75em; border-left: 2px solid #e5e9ed;"` : '';
+            const postUri = post.uri || '';
+            const indent = depth > 0 ? ` style="margin-left: ${Math.min(depth * 1.2, 3)}em; padding-left: 0.75em; border-left: 2px solid #e5e9ed;"` : '';
             
             let nestedReplies = '';
             if (reply.replies && reply.replies.length > 0) {
                 nestedReplies = reply.replies.map(r => renderReply(r, depth + 1)).join('');
             }
             
+            // Build Bluesky URL from post URI
+            let blueskyUrl = '';
+            if (postUri) {
+                const parts = postUri.replace('at://', '').split('/');
+                if (parts.length >= 3) {
+                    const rkey = parts[parts.length - 1];
+                    blueskyUrl = `https://bsky.app/profile/${handle}/post/${rkey}`;
+                }
+            }
+            
             return `
-                <div class="browse-post-comment"${indent} style="margin-bottom: 0.75em; padding: 0.5em; background: #f8f9fa; border-radius: 6px;">
-                    <div style="display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.25em;">
-                        <strong style="font-size: 0.85rem; color: #0645ad;">@${this.escapeHtml(handle)}</strong>
-                        ${displayName !== handle ? `<span style="font-size: 0.85rem; color: #555;">${this.escapeHtml(displayName)}</span>` : ''}
-                        ${createdAt ? `<span style="font-size: 0.75rem; color: #999;">${createdAt}</span>` : ''}
+                <div class="browse-post-comment"${indent} style="margin-bottom: 0.75em; padding: 0.75em; background: #f8f9fa; border-radius: 6px; overflow-wrap: break-word; word-wrap: break-word; max-width: 100%;">
+                    <div style="margin-bottom: 0.5em; line-height: 1.4;">
+                        <div style="font-size: 0.85rem; font-weight: 600; color: #0645ad; margin-bottom: 0.15em;">@${this.escapeHtml(handle)}</div>
+                        ${displayName !== handle ? `<div style="font-size: 0.8rem; color: #555; margin-bottom: 0.15em;">${this.escapeHtml(displayName)}</div>` : ''}
+                        ${createdAt ? `<div style="font-size: 0.75rem; color: #999;">${createdAt}</div>` : ''}
                     </div>
-                    <div style="font-size: 0.9rem; color: #333; white-space: pre-wrap; word-break: break-word;">${this.escapeHtml(text).replace(/\n/g, '<br>')}</div>
+                    <div style="font-size: 0.9rem; color: #333; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; line-height: 1.5; margin-bottom: 0.5em;">${this.escapeHtml(text).replace(/\n/g, '<br>')}</div>
+                    ${blueskyUrl ? `<a href="${blueskyUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 0.75rem; color: #0645ad; text-decoration: none; display: inline-block; margin-top: 0.25em;">View on Bluesky →</a>` : ''}
                     ${nestedReplies}
                 </div>
             `;
         };
         
-        return '<div style="margin-bottom: 1rem;"><strong style="font-size: 0.9rem; display: block; margin-bottom: 0.5em;">Comments</strong>' + replies.map(r => renderReply(r, 0)).join('') + '</div>';
+        return '<div style="margin-bottom: 1rem;"><strong style="font-size: 0.9rem; display: block; margin-bottom: 0.75em;">Comments</strong>' + replies.map(r => renderReply(r, 0)).join('') + '</div>';
     }
 
     showBrowseAddModal(item) {

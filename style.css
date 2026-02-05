@@ -3963,12 +3963,24 @@ h3:hover .section-actions {
     background: #f8f9fa;
     border-top: 1px solid #eee;
 }
+.browse-author-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.25em;
+    gap: 0.5em;
+}
 .browse-author {
-    display: block;
     font-size: 0.85rem;
     font-weight: 600;
     color: var(--mw-link, #0645ad);
-    margin-bottom: 0.25em;
+    flex-shrink: 0;
+}
+.browse-time {
+    font-size: 0.75rem;
+    color: #999;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 .browse-snippet {
     margin: 0 0 0.5em 0;
@@ -4020,6 +4032,10 @@ h3:hover .section-actions {
     display: flex;
     flex-direction: column;
     gap: 1rem;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 .browse-post-fulltext {
     white-space: pre-wrap;
@@ -4053,9 +4069,16 @@ h3:hover .section-actions {
     background: #f8f9fa;
     border-radius: 6px;
     border: 1px solid #e5e9ed;
+    overflow-x: hidden;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
 }
 .browse-post-comment {
     margin-bottom: 0.75em;
+    max-width: 100%;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    box-sizing: border-box;
 }
 .browse-post-comment:last-child {
     margin-bottom: 0;

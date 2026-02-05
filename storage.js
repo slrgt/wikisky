@@ -2541,6 +2541,7 @@ class WikiStorage {
             const postUri = post?.uri || '';
             const embed = post?.embed;
             const authorDisplayName = author?.displayName;
+            const createdAt = post?.record?.createdAt || post?.indexedAt || null;
             postsProcessed++;
             if (!embed || !did) {
                 postsWithoutMedia++;
@@ -2577,7 +2578,8 @@ class WikiStorage {
                             postUri,
                             textSnippet: postText,
                             postText: postText,
-                            alt: img.alt || ''
+                            alt: img.alt || '',
+                            createdAt: createdAt
                         });
                     }
                 }
@@ -2604,7 +2606,8 @@ class WikiStorage {
                         postUri,
                         textSnippet: postText,
                         postText: postText,
-                        alt: embed.alt || ''
+                        alt: embed.alt || '',
+                        createdAt: createdAt
                     });
                 }
             }
@@ -2633,7 +2636,8 @@ class WikiStorage {
                         postUri,
                         textSnippet: postText,
                         postText: postText,
-                        alt: media.alt || ''
+                        alt: media.alt || '',
+                        createdAt: createdAt
                     });
                 }
             } else if (embed.media && embed.media.image) {
@@ -2652,7 +2656,8 @@ class WikiStorage {
                             postUri,
                             textSnippet: postText,
                             postText: postText,
-                            alt: ''
+                            alt: '',
+                            createdAt: createdAt
                         });
                     }
                 }
