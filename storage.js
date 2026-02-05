@@ -1145,6 +1145,7 @@ class WikiStorage {
             localStorage.setItem('bluesky-session', JSON.stringify(session));
         }
         const rkey = this._toValidArticleRkey(key);
+        console.log('Deleting article:', { key, rkey, did: this.blueskyClient.did, pdsBase: this._pdsBaseForRepo() });
         const body = {
             repo: this.blueskyClient.did,
             collection: 'site.standard.document',
@@ -1161,9 +1162,33 @@ class WikiStorage {
             const msg = err.message || err.error || '';
             if (msg.includes('PDS access only') && this._pdsBaseForRepo() !== 'https://bsky.social') {
                 res = await doDelete('https://bsky.social');
-                if (res.ok) return;
+                if (res.ok) {
+                    // Verify deletion succeeded by checking if record still exists
+                    try {
+                        const checkRes = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`);
+                        if (checkRes.ok) {
+                            throw new Error('Delete appeared to succeed but record still exists on PDS');
+                        }
+                    } catch (checkErr) {
+                        if (checkErr.message && checkErr.message.includes('still exists')) throw checkErr;
+                        // Record not found = deletion succeeded
+                    }
+                    return;
+                }
             }
-            throw new Error(msg || `Failed to delete article from Bluesky (${res.status})`);
+            const fullMsg = msg || `Failed to delete article from Bluesky PDS (HTTP ${res.status}). rkey: ${rkey}`;
+            console.error('Delete article error:', { rkey, status: res.status, error: err, pdsBase: this._pdsBaseForRepo() });
+            throw new Error(fullMsg);
+        }
+        // Verify deletion succeeded by checking if record still exists
+        try {
+            const checkRes = await this._pdsFetch(`${this._pdsBaseForRepo()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`);
+            if (checkRes.ok) {
+                throw new Error('Delete appeared to succeed but record still exists on PDS');
+            }
+        } catch (checkErr) {
+            if (checkErr.message && checkErr.message.includes('still exists')) throw checkErr;
+            // Record not found = deletion succeeded
         }
     }
 
@@ -2261,9 +2286,11 @@ class WikiStorage {
 
     // Parse feed array (getFeed or getTimeline response) into browse items with images/videos.
     // App View returns view format (thumb/fullsize URLs); also support record format (image.ref).
+    // Filters out own posts (only shows posts from people you follow).
     _parseFeedToBrowseItems(feed) {
         const items = [];
         const list = feed || [];
+        const myDid = this.blueskyClient?.did;
         for (const item of list) {
             const post = item.post;
             const author = post?.author;
@@ -2274,6 +2301,8 @@ class WikiStorage {
             const embed = post?.embed;
             const authorDisplayName = author?.displayName;
             if (!embed || !did) continue;
+            // Skip own posts - browse should show posts from people you follow, not your own
+            if (myDid && did === myDid) continue;
             const imagesList = embed.images && Array.isArray(embed.images) ? embed.images : (embed.media && embed.media.images && Array.isArray(embed.media.images) ? embed.media.images : null);
             if (imagesList) {
                 for (let i = 0; i < imagesList.length; i++) {
