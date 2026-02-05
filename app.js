@@ -7126,6 +7126,22 @@ ${document.body.innerHTML}
     browseFeedItems = [];
     browseFeedLoading = false;
 
+    getAvailableFeeds() {
+        const isLoggedIn = this.storage.storageMode === 'bluesky' && this.storage.blueskyClient?.accessJwt;
+        const feeds = [];
+        
+        if (isLoggedIn) {
+            feeds.push({ type: 'timeline', name: 'Your Timeline', description: 'Posts from people you follow' });
+        }
+        
+        feeds.push(
+            { type: 'whats-hot', name: "What's Hot", description: 'Popular posts right now', uri: 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot' },
+            { type: 'custom', name: 'Discover', description: 'Discover new content', uri: 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/discover' }
+        );
+        
+        return feeds;
+    }
+
     async showBrowsePage(cursor = null, append = false) {
         const container = document.getElementById('article-container');
         if (!container) return;
@@ -7135,17 +7151,29 @@ ${document.body.innerHTML}
         
         this.currentArticleKey = 'browse';
         const isLoggedIn = this.storage.storageMode === 'bluesky' && this.storage.blueskyClient?.accessJwt;
-        const browseTitle = isLoggedIn ? 'Your Bluesky feed' : 'Browse AT Protocol';
-        const browseDesc = isLoggedIn
-            ? 'Images and videos from your feed. Add any to your artboards.'
-            : 'Discover images and videos from the Bluesky feed. Add any to your artboards.';
+        const selectedFeed = this.storage.getSelectedFeed();
+        const availableFeeds = this.getAvailableFeeds();
         
         // Only initialize HTML if not appending
         if (!append) {
+            const feedSelectorHtml = `
+                <div class="browse-feed-selector" style="margin-bottom: 1em;">
+                    <label for="browse-feed-select" style="font-weight: 600; margin-right: 0.5em; font-size: 0.9rem;">Feed:</label>
+                    <select id="browse-feed-select" style="padding: 0.4em 0.6em; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; background: white; cursor: pointer;">
+                        ${availableFeeds.map(feed => 
+                            `<option value="${feed.type}" data-uri="${feed.uri || ''}" ${selectedFeed.type === feed.type ? 'selected' : ''}>${this.escapeHtml(feed.name)}</option>`
+                        ).join('')}
+                    </select>
+                    <span class="browse-feed-description" style="margin-left: 0.75em; color: #555; font-size: 0.85rem;">
+                        ${availableFeeds.find(f => f.type === selectedFeed.type)?.description || ''}
+                    </span>
+                </div>
+            `;
+            
             container.innerHTML = `
                 <div class="browse-page-header">
-                    <h1>${browseTitle}</h1>
-                    <p class="browse-page-desc">${browseDesc}</p>
+                    <h1>Browse Bluesky</h1>
+                    ${feedSelectorHtml}
                     <div class="browse-loading" id="browse-loading">Loading feed…</div>
                 </div>
                 <div id="browse-grid" class="archive-page-grid"></div>
@@ -7158,6 +7186,33 @@ ${document.body.innerHTML}
             if (this._browseScrollHandler) {
                 window.removeEventListener('scroll', this._browseScrollHandler);
                 this._browseScrollHandler = null;
+            }
+            
+            // Set up feed selector change handler
+            const feedSelect = document.getElementById('browse-feed-select');
+            const feedDescription = document.querySelector('.browse-feed-description');
+            if (feedSelect) {
+                feedSelect.addEventListener('change', (e) => {
+                    const selectedOption = e.target.options[e.target.selectedIndex];
+                    const feedType = selectedOption.value;
+                    const feedUri = selectedOption.getAttribute('data-uri') || '';
+                    const feed = availableFeeds.find(f => f.type === feedType);
+                    
+                    if (!feed) return;
+                    
+                    const feedData = feedType === 'timeline' 
+                        ? { type: 'timeline', name: feed.name }
+                        : { type: feedType, name: feed.name, uri: feedUri };
+                    
+                    this.storage.setSelectedFeed(feedData);
+                    if (feedDescription) {
+                        feedDescription.textContent = feed.description || '';
+                    }
+                    
+                    // Reload feed
+                    this.browseFeedCursor = null;
+                    this.showBrowsePage(null, false);
+                });
             }
         }
         
@@ -7178,7 +7233,8 @@ ${document.body.innerHTML}
         }
         
         try {
-            const { items, cursor: nextCursor } = await this.storage.fetchBrowseFeed(cursor, 30);
+            const selectedFeed = this.storage.getSelectedFeed();
+            const { items, cursor: nextCursor } = await this.storage.fetchBrowseFeed(cursor, 30, selectedFeed);
             this.browseFeedCursor = nextCursor;
             
             if (loadingEl) loadingEl.style.display = 'none';

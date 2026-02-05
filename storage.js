@@ -2668,10 +2668,55 @@ class WikiStorage {
         return items;
     }
 
-    // Fetch feed from AT Protocol. When logged in, uses your Bluesky timeline; otherwise public "what's hot".
+    // Get selected feed preference
+    getSelectedFeed() {
+        const stored = localStorage.getItem('xoxowiki-selected-feed');
+        let selectedFeed = null;
+        if (stored) {
+            try {
+                selectedFeed = JSON.parse(stored);
+            } catch (_) {}
+        }
+        
+        // Validate selected feed is still valid for current login status
+        const isLoggedIn = this.blueskyClient?.accessJwt;
+        if (selectedFeed && selectedFeed.type === 'timeline' && !isLoggedIn) {
+            // User logged out but timeline was selected - reset to whats-hot
+            selectedFeed = null;
+        }
+        
+        // Default: timeline if logged in, whats-hot if not
+        if (!selectedFeed) {
+            if (isLoggedIn) {
+                selectedFeed = { type: 'timeline', name: 'Your Timeline' };
+            } else {
+                selectedFeed = { type: 'whats-hot', name: "What's Hot" };
+            }
+            // Save the default
+            this.setSelectedFeed(selectedFeed);
+        }
+        
+        return selectedFeed;
+    }
+
+    // Set selected feed preference
+    setSelectedFeed(feed) {
+        localStorage.setItem('xoxowiki-selected-feed', JSON.stringify(feed));
+    }
+
+    // Fetch feed from AT Protocol. Supports timeline (when logged in) or custom feed generators.
     // getTimeline is an App View API — use api.bsky.app first so custom PDS users still get a feed.
-    async fetchBrowseFeed(cursor = null, limit = 30) {
-        if (this.blueskyClient?.accessJwt) {
+    async fetchBrowseFeed(cursor = null, limit = 30, feedType = null) {
+        const selectedFeed = feedType || this.getSelectedFeed();
+        
+        // If timeline is selected but user is not logged in, fall back to whats-hot
+        if (selectedFeed.type === 'timeline' && !this.blueskyClient?.accessJwt) {
+            const fallbackFeed = { type: 'whats-hot', name: "What's Hot", uri: 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot' };
+            selectedFeed.type = 'whats-hot';
+            selectedFeed.uri = fallbackFeed.uri;
+        }
+        
+        if (selectedFeed.type === 'timeline' && this.blueskyClient?.accessJwt) {
             const buildUrl = (base) => {
                 let u = `${base}/xrpc/app.bsky.feed.getTimeline?limit=${limit}`;
                 if (cursor) u += `&cursor=${encodeURIComponent(cursor)}`;
@@ -2706,7 +2751,9 @@ class WikiStorage {
             const items = this._parseFeedToBrowseItems(data.feed || []);
             return { items, cursor: data.cursor || null };
         }
-        const feedUri = 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot';
+        
+        // Use feed generator (getFeed API)
+        const feedUri = selectedFeed.uri || 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot';
         let url = `https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed?feed=${encodeURIComponent(feedUri)}&limit=${limit}`;
         if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
         const response = await fetch(url);
