@@ -1147,51 +1147,69 @@ class WikiStorage {
     }
 
     async deleteArticleFromBluesky(key) {
-        await this.ensureValidToken();
-        // Always resolve PDS from DID so we hit the correct server (your data lives on your PDS)
+        // Resolve PDS from DID first so token refresh (if any) and all requests use the correct server
         const resolvedPds = await this._resolvePdsUrlForDid(this.blueskyClient.did);
         this.blueskyClient.pdsUrl = resolvedPds;
         const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
         session.pdsUrl = resolvedPds;
         localStorage.setItem('bluesky-session', JSON.stringify(session));
 
+        await this.ensureValidToken();
+
         const rkey = this._toValidArticleRkey(key);
         const baseUrl = this._pdsBaseForRepo();
-        console.log('Deleting article from PDS:', { key, rkey, did: this.blueskyClient.did, pds: baseUrl });
         const body = {
             repo: this.blueskyClient.did,
             collection: 'site.standard.document',
             rkey
         };
         const deleteUrl = `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.deleteRecord`;
-        const res = await this._pdsFetch(deleteUrl, {
+        const checkUrl = () => `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`;
+
+        const doDelete = () => this._pdsFetch(deleteUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
 
+        const verifyGone = async () => {
+            const res = await this._pdsFetch(checkUrl());
+            if (!res.ok) return true; // 404 or error = record gone
+            const data = await res.json().catch(() => null);
+            return !(data && data.value);
+        };
+
+        let res = await doDelete();
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             const msg = err.message || err.error || '';
             const errCode = err.error || '';
-            // Only treat as "record already gone" for explicit 404 or RecordNotFound
             const isRecordNotFound = res.status === 404 || errCode === 'RecordNotFound' || (typeof msg === 'string' && /RecordNotFound|record not found/i.test(msg) && res.status >= 400 && res.status < 500);
-            if (isRecordNotFound) {
-                console.log('Record already missing on PDS, continuing with local delete:', rkey);
-                return;
-            }
+            if (isRecordNotFound) return;
             const pdsHost = baseUrl.replace(/^https?:\/\//, '').split('/')[0];
             throw new Error(`PDS (${pdsHost}) returned ${res.status}: ${msg || errCode || 'Could not delete record'}. rkey: ${rkey}`);
         }
 
-        // Verify the record is actually gone
-        const checkUrl = `${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`;
-        const checkRes = await this._pdsFetch(checkUrl);
-        if (checkRes.ok) {
-            const checkData = await checkRes.json().catch(() => null);
-            if (checkData && checkData.value) {
-                throw new Error(`Delete was accepted but record still exists on PDS. Try again or check PDS (${baseUrl}).`);
+        // Verify the record is gone; some PDS may have brief eventual consistency
+        let gone = await verifyGone();
+        if (!gone) {
+            await new Promise(r => setTimeout(r, 400));
+            gone = await verifyGone();
+        }
+        if (!gone) {
+            res = await doDelete();
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.message || err.error || `Delete failed (${res.status}). rkey: ${rkey}`);
             }
+            gone = await verifyGone();
+            if (!gone) {
+                await new Promise(r => setTimeout(r, 400));
+                gone = await verifyGone();
+            }
+        }
+        if (!gone) {
+            throw new Error(`Delete was accepted but record still exists on PDS. Try again or check PDS (${baseUrl}).`);
         }
     }
 
