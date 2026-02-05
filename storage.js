@@ -999,9 +999,18 @@ class WikiStorage {
         return null;
     }
 
+    /** AT Protocol record keys: 1–512 chars, only A-Za-z0-9 . - _ : ~, not . or .. */
+    _toValidArticleRkey(key) {
+        if (key == null || typeof key !== 'string') return 'article';
+        let s = key.replace(/[^A-Za-z0-9._\-:~]/g, '-').replace(/^-+|-+$/g, '').slice(0, 512);
+        if (s === '' || s === '.' || s === '..') s = 'article-' + Math.abs(key.split('').reduce((a, c) => ((a << 5) - a) + c.charCodeAt(0), 0)).toString(36);
+        return s;
+    }
+
     async getArticleFromBluesky(key) {
         try {
-            const response = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(key)}`);
+            const rkey = this._toValidArticleRkey(key);
+            const response = await this._pdsFetch(`${this._pdsBase()}/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=site.standard.document&rkey=${encodeURIComponent(rkey)}`);
 
             if (!response.ok) {
                 return null;
@@ -1055,10 +1064,10 @@ class WikiStorage {
     }
 
     async saveArticleToBluesky(key, title, content) {
-        // site.standard.document lexicon (same as standard.site / pckt.blog AT Protocol blog posts)
+        const rkey = this._toValidArticleRkey(key);
         const recordData = {
             $type: 'site.standard.document',
-            path: key,
+            path: rkey,
             title: title,
             content: content,
             createdAt: new Date().toISOString()
@@ -1073,7 +1082,7 @@ class WikiStorage {
                 body: JSON.stringify({
                     repo: this.blueskyClient.did,
                     collection: 'site.standard.document',
-                    rkey: key,
+                    rkey,
                     record: recordData
                 })
             });
@@ -1126,10 +1135,11 @@ class WikiStorage {
             session.pdsUrl = this.blueskyClient.pdsUrl;
             localStorage.setItem('bluesky-session', JSON.stringify(session));
         }
+        const rkey = this._toValidArticleRkey(key);
         const body = {
             repo: this.blueskyClient.did,
             collection: 'site.standard.document',
-            rkey: key
+            rkey
         };
         const doDelete = (baseUrl) => this._pdsFetch(`${baseUrl.replace(/\/$/, '')}/xrpc/com.atproto.repo.deleteRecord`, {
             method: 'POST',
@@ -2240,7 +2250,8 @@ class WikiStorage {
         return { items };
     }
 
-    // Parse feed array (getFeed or getTimeline response) into browse items with images/videos
+    // Parse feed array (getFeed or getTimeline response) into browse items with images/videos.
+    // App View returns view format (thumb/fullsize URLs); also support record format (image.ref).
     _parseFeedToBrowseItems(feed) {
         const items = [];
         const list = feed || [];
@@ -2258,10 +2269,16 @@ class WikiStorage {
             if (imagesList) {
                 for (let i = 0; i < imagesList.length; i++) {
                     const img = imagesList[i];
-                    const ref = img?.image?.ref || img?.ref;
-                    const cid = ref?.$link || ref;
-                    if (!cid) continue;
-                    const imageUrl = this.getAtProtocolBlobUrl(cid, did);
+                    let imageUrl = null;
+                    if (typeof img?.fullsize === 'string' && img.fullsize.startsWith('http')) {
+                        imageUrl = img.fullsize;
+                    } else if (typeof img?.thumb === 'string' && img.thumb.startsWith('http')) {
+                        imageUrl = img.thumb;
+                    } else {
+                        const ref = img?.image?.ref || img?.ref;
+                        const cid = ref?.$link || ref;
+                        if (cid) imageUrl = this.getAtProtocolBlobUrl(cid, did);
+                    }
                     if (imageUrl) {
                         items.push({
                             type: 'image',
@@ -2277,7 +2294,61 @@ class WikiStorage {
                     }
                 }
             }
-            if (embed.media && embed.media.image) {
+            const media = embed.media;
+            const directPlaylist = typeof embed.playlist === 'string' && embed.playlist.startsWith('http') ? embed.playlist : null;
+            const directThumb = typeof embed.thumbnail === 'string' && embed.thumbnail.startsWith('http') ? embed.thumbnail : null;
+            const directCid = embed.cid || (embed.video && (embed.video.ref || embed.video.$link));
+            if (directPlaylist || directCid) {
+                const videoUrl = directCid ? this.getAtProtocolBlobUrl(directCid, did) : directPlaylist;
+                let thumbUrl = directThumb;
+                if (!thumbUrl && embed.thumbnail && typeof embed.thumbnail === 'object') {
+                    const tr = embed.thumbnail?.ref || embed.thumbnail;
+                    thumbUrl = tr ? this.getAtProtocolBlobUrl(tr?.$link || tr, did) : null;
+                }
+                if (videoUrl) {
+                    items.push({
+                        type: 'video',
+                        imageUrl: thumbUrl || videoUrl,
+                        videoUrl,
+                        authorHandle: handle,
+                        authorDid: did,
+                        authorDisplayName: authorDisplayName,
+                        postUri,
+                        textSnippet: postText,
+                        postText: postText,
+                        alt: embed.alt || ''
+                    });
+                }
+            }
+            if (media) {
+                let videoUrl = null;
+                let thumbUrl = null;
+                if (typeof media.playlist === 'string' && media.playlist.startsWith('http')) videoUrl = media.playlist;
+                if (typeof media.thumbnail === 'string' && media.thumbnail.startsWith('http')) thumbUrl = media.thumbnail;
+                else if (media.thumbnail && (media.thumbnail.ref || media.thumbnail.$link)) {
+                    const tr = media.thumbnail.ref || media.thumbnail;
+                    thumbUrl = this.getAtProtocolBlobUrl(tr?.$link || tr, did);
+                }
+                if (!videoUrl && media.image) {
+                    const ref = media.image?.ref || media.image;
+                    const cid = ref?.$link || ref;
+                    if (cid) videoUrl = this.getAtProtocolBlobUrl(cid, did);
+                }
+                if (videoUrl) {
+                    items.push({
+                        type: 'video',
+                        imageUrl: thumbUrl || videoUrl,
+                        videoUrl,
+                        authorHandle: handle,
+                        authorDid: did,
+                        authorDisplayName: authorDisplayName,
+                        postUri,
+                        textSnippet: postText,
+                        postText: postText,
+                        alt: media.alt || ''
+                    });
+                }
+            } else if (embed.media && embed.media.image) {
                 const ref = embed.media.image.ref || embed.media.image;
                 const cid = ref?.$link || ref;
                 if (cid) {
