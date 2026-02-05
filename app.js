@@ -310,27 +310,37 @@ class WikiApp {
             });
         });
         
-        // Close browse-post-modal when clicking outside (on backdrop)
-        const browsePostModal = document.getElementById('browse-post-modal');
-        if (browsePostModal) {
-            browsePostModal.addEventListener('click', (e) => {
-                // If click is directly on the modal backdrop (not on modal-content or its children), close it
-                if (e.target === browsePostModal) {
-                    browsePostModal.style.display = 'none';
+        // Close any modal when clicking outside (on backdrop) - use event delegation for all modals
+        document.addEventListener('click', (e) => {
+            // Check if click is on a modal backdrop (the article-modal element itself, not its children)
+            const modal = e.target.closest('.article-modal');
+            if (modal && e.target === modal) {
+                // Click is directly on the modal backdrop, close it
+                const modalId = modal.id;
+                if (modalId === 'history-modal') {
+                    this.closeHistoryModal();
+                } else if (modalId === 'import-json-modal') {
+                    this.closeImportModal();
+                } else if (modalId === 'bluesky-modal') {
+                    this.closeBlueskyModal();
+                } else if (modalId === 'webcomic-upload-modal') {
+                    this.closeUploadWebcomicModal();
+                } else if (modalId === 'pds-data-modal') {
+                    this.closePDSDataModal();
+                } else if (modalId === 'browse-post-modal') {
+                    modal.style.display = 'none';
+                } else if (modalId === 'browse-add-modal') {
+                    modal.style.display = 'none';
+                } else if (modalId === 'browse-feed-search-modal') {
+                    modal.style.display = 'none';
+                } else if (modalId === 'article-modal') {
+                    this.closeModal();
+                } else {
+                    // Generic close for any other modal
+                    modal.style.display = 'none';
                 }
-            });
-        }
-        
-        // Close browse-add-modal when clicking outside (on backdrop)
-        const browseAddModal = document.getElementById('browse-add-modal');
-        if (browseAddModal) {
-            browseAddModal.addEventListener('click', (e) => {
-                // If click is directly on the modal backdrop (not on modal-content or its children), close it
-                if (e.target === browseAddModal) {
-                    browseAddModal.style.display = 'none';
-                }
-            });
-        }
+            }
+        }, true); // Use capture phase to catch events before they bubble
 
         // Bluesky connection (handled in menu section above)
         
@@ -7635,12 +7645,7 @@ ${document.body.innerHTML}
             });
         }
         
-        // Close on backdrop click
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) {
-                modal.style.display = 'none';
-            }
-        });
+        // Close on backdrop click (handled by general modal click handler in setupEventListeners)
         
         const searchInput = document.getElementById('feed-search-input');
         const searchBtn = document.getElementById('feed-search-btn');
@@ -8081,7 +8086,7 @@ ${document.body.innerHTML}
                     ` : ''}
                 </div>
                 <div class="article-header-actions">
-                    <button class="${this.collectionEditMode ? 'btn-primary' : 'btn-secondary'} collection-edit-btn" onclick="window.wikiApp.toggleCollectionEditMode()" id="collection-edit-btn" style="display: inline-flex; align-items: center;">
+                    <button type="button" class="${this.collectionEditMode ? 'btn-primary' : 'btn-secondary'} collection-edit-btn" id="collection-edit-btn" style="display: inline-flex; align-items: center;">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:0.5em;">
                             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
                             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
@@ -8108,6 +8113,25 @@ ${document.body.innerHTML}
         if (sidebarThoughts) sidebarThoughts.style.display = 'block';
         if (sidebarRecentArticles) sidebarRecentArticles.style.display = 'block';
         if (sidebarMenu) sidebarMenu.style.display = 'block';
+        
+        // Set up edit button event listener
+        const editBtn = document.getElementById('collection-edit-btn');
+        if (editBtn) {
+            // Remove any existing listeners by cloning and replacing
+            const newEditBtn = editBtn.cloneNode(true);
+            editBtn.parentNode.replaceChild(newEditBtn, editBtn);
+            // Add fresh event listener
+            newEditBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                try {
+                    this.toggleCollectionEditMode();
+                } catch (err) {
+                    console.error('Error toggling collection edit mode:', err);
+                    alert('Error: ' + (err.message || 'Could not toggle edit mode'));
+                }
+            });
+        }
         
         this.updateRightSidebar();
     }
@@ -8248,17 +8272,26 @@ ${document.body.innerHTML}
     
     // Alias for backward compatibility
     toggleCollectionEditMode() {
-        this.collectionEditMode = !this.collectionEditMode;
-        if (!this.collectionEditMode) {
-            // Clear selections when exiting edit mode
+        try {
+            this.collectionEditMode = !this.collectionEditMode;
+            if (!this.collectionEditMode) {
+                // Clear selections when exiting edit mode
+                this.selectedCollectionItems.clear();
+                this.selectedCollections.clear();
+            }
+            // Re-render the page to show checkboxes, preserving current filter
+            if (this.currentArticleKey === 'collection') {
+                // Use stored filter if available, otherwise null (All)
+                const albumFilter = this.currentCollectionFilter || null;
+                this.showCollectionPage(albumFilter);
+            }
+        } catch (err) {
+            console.error('Error in toggleCollectionEditMode:', err);
+            // Reset state on error
+            this.collectionEditMode = false;
             this.selectedCollectionItems.clear();
             this.selectedCollections.clear();
-        }
-        // Re-render the page to show checkboxes, preserving current filter
-        if (this.currentArticleKey === 'collection') {
-            // Use stored filter if available, otherwise null (All)
-            const albumFilter = this.currentCollectionFilter || null;
-            this.showCollectionPage(albumFilter);
+            throw err;
         }
     }
 
