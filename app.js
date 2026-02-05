@@ -3049,7 +3049,12 @@ class WikiApp {
         }
 
         const deletedKey = this.currentArticleKey;
-        await this.storage.deleteArticle(deletedKey);
+        try {
+            await this.storage.deleteArticle(deletedKey);
+        } catch (e) {
+            alert('Could not delete article from Bluesky PDS: ' + (e.message || e));
+            return;
+        }
         // Remove from bookmarks if bookmarked
         if (this.storage.isBookmarked(deletedKey)) {
             this.storage.removeBookmark(deletedKey);
@@ -3064,7 +3069,7 @@ class WikiApp {
         this.updateThoughtsDisplay();
         this.updateRecentArticlesDisplay();
         this.navigate('articles');
-        this.showUpdateNotification('Article deleted from storage, PDS, and JSON');
+        this.showUpdateNotification('Article deleted');
     }
 
     closeModal() {

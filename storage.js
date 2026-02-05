@@ -42,16 +42,33 @@ class WikiStorage {
         try {
             await this.ensureValidToken();
             const res = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${this.blueskyClient.did}&collection=com.atproto.repo.record&rkey=xoxowiki-archive`);
-            if (!res.ok) return;
+            const localArchive = this.getArchive();
+            if (!res.ok) {
+                if (localArchive.length > 0) await this.syncArchiveToBlueskyIfConnected();
+                return;
+            }
             const data = await res.json();
             const content = data.value?.content;
             if (typeof content === 'string') {
                 const payload = JSON.parse(content);
                 if (payload.archive && Array.isArray(payload.archive)) {
-                    localStorage.setItem('xoxowiki-archive', JSON.stringify(payload.archive));
+                    const pdsIds = new Set(payload.archive.map(a => a.id));
+                    const onlyLocal = localArchive.filter(a => !pdsIds.has(a.id));
+                    const merged = [...payload.archive, ...onlyLocal];
+                    localStorage.setItem('xoxowiki-archive', JSON.stringify(merged));
+                    if (onlyLocal.length > 0) await this.syncArchiveToBlueskyIfConnected();
+                } else if (localArchive.length > 0) {
+                    await this.syncArchiveToBlueskyIfConnected();
+                } else {
+                    localStorage.setItem('xoxowiki-archive', JSON.stringify([]));
                 }
                 if (payload.albums && Array.isArray(payload.albums)) {
-                    localStorage.setItem('xoxowiki-albums', JSON.stringify(payload.albums));
+                    const localAlbums = JSON.parse(localStorage.getItem('xoxowiki-albums') || '[]');
+                    const pdsAlbumIds = new Set((payload.albums || []).map(a => a.id));
+                    const onlyLocalAlbums = localAlbums.filter(a => !pdsAlbumIds.has(a.id));
+                    const mergedAlbums = [...(payload.albums || []), ...onlyLocalAlbums];
+                    localStorage.setItem('xoxowiki-albums', JSON.stringify(mergedAlbums));
+                    if (onlyLocalAlbums.length > 0) await this.syncArchiveToBlueskyIfConnected();
                 }
             }
         } catch (e) {
@@ -870,13 +887,17 @@ class WikiStorage {
         }
     }
 
-    // Delete article
+    // Delete article (from PDS first so it fully deletes, then local)
     async deleteArticle(key) {
-        await this.deleteArticleFromLocal(key);
-        
         if (this.storageMode === 'bluesky' && this.blueskyClient) {
-            await this.deleteArticleFromBluesky(key);
+            try {
+                await this.deleteArticleFromBluesky(key);
+            } catch (e) {
+                const isNotFound = e.message && (e.message.includes('NotFound') || e.message.includes('404') || e.message.includes('RecordNotFound'));
+                if (!isNotFound) throw e;
+            }
         }
+        await this.deleteArticleFromLocal(key);
     }
 
     async deleteArticleFromLocal(key) {
@@ -887,18 +908,19 @@ class WikiStorage {
     }
 
     async deleteArticleFromBluesky(key) {
-        try {
-            await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.deleteRecord`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    repo: this.blueskyClient.did,
-                    collection: 'site.standard.document',
-                    rkey: key
-                })
-            });
-        } catch (error) {
-            console.error('Error deleting from Bluesky:', error);
+        await this.ensureValidToken();
+        const res = await this._pdsFetch(`https://bsky.social/xrpc/com.atproto.repo.deleteRecord`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                repo: this.blueskyClient.did,
+                collection: 'site.standard.document',
+                rkey: key
+            })
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.message || err.error || `Failed to delete article from Bluesky (${res.status})`);
         }
     }
 
@@ -2186,14 +2208,16 @@ class WikiStorage {
             item.createdAt = item.createdAt || new Date().toISOString();
             
             // Option A: External URL (AT Protocol / Bluesky CDN / any URL)
-            // When connected to Bluesky, upload media to user's PDS so artboards sync and media lives in their repo
+            // Always store the URLs so they sync to PDS and embed when you log in. Optionally try to copy blobs to your PDS.
             if (hasUrl) {
-                let metadata = {
+                const metadata = {
                     id: item.id,
                     name: item.name || 'Image',
                     type: item.type || 'image',
                     source: item.source,
                     createdAt: item.createdAt,
+                    imageUrl: item.imageUrl,
+                    videoUrl: item.videoUrl || null,
                     albumIds: item.albumIds || [],
                     articleIds: item.articleIds || [],
                     habitDays: item.habitDays || [],
@@ -2208,17 +2232,15 @@ class WikiStorage {
                 if (this.blueskyClient && this.blueskyClient.accessJwt) {
                     try {
                         await this.ensureValidToken();
-                        const imageUrlToFetch = item.imageUrl;
-                        const imageRes = await fetch(imageUrlToFetch, { mode: 'cors' });
-                        if (!imageRes.ok) throw new Error(`Failed to fetch image: ${imageRes.status}`);
-                        const imageBlob = await imageRes.blob();
-                        const imageMime = imageBlob.type || 'image/jpeg';
-                        const imageBlobResult = await this.uploadBlobToAtProtocol(imageBlob, imageMime);
-                        const blobUrl = this.getAtProtocolBlobUrl(imageBlobResult.ref?.$link || imageBlobResult.ref, this.blueskyClient.did);
-                        metadata.atBlobRef = imageBlobResult.ref;
-                        metadata.atBlobRefDid = this.blueskyClient.did;
-                        metadata.imageUrl = blobUrl;
-
+                        const imageRes = await fetch(item.imageUrl, { mode: 'cors' });
+                        if (imageRes.ok) {
+                            const imageBlob = await imageRes.blob();
+                            const imageMime = imageBlob.type || 'image/jpeg';
+                            const imageBlobResult = await this.uploadBlobToAtProtocol(imageBlob, imageMime);
+                            metadata.atBlobRef = imageBlobResult.ref;
+                            metadata.atBlobRefDid = this.blueskyClient.did;
+                            metadata.imageUrl = this.getAtProtocolBlobUrl(imageBlobResult.ref?.$link || imageBlobResult.ref, this.blueskyClient.did);
+                        }
                         if (item.type === 'video' && item.videoUrl && typeof item.videoUrl === 'string' && item.videoUrl.startsWith('http')) {
                             const videoRes = await fetch(item.videoUrl, { mode: 'cors' });
                             if (videoRes.ok) {
@@ -2226,20 +2248,11 @@ class WikiStorage {
                                 const videoMime = videoBlob.type || 'video/mp4';
                                 const videoBlobResult = await this.uploadBlobToAtProtocol(videoBlob, videoMime);
                                 metadata.videoUrl = this.getAtProtocolBlobUrl(videoBlobResult.ref?.$link || videoBlobResult.ref, this.blueskyClient.did);
-                            } else {
-                                metadata.videoUrl = item.videoUrl;
                             }
-                        } else if (item.videoUrl) {
-                            metadata.videoUrl = item.videoUrl;
                         }
                     } catch (e) {
-                        console.warn('Upload URL media to PDS failed, saving URL only:', e);
-                        metadata.imageUrl = item.imageUrl;
-                        if (item.videoUrl) metadata.videoUrl = item.videoUrl;
+                        console.warn('Copy media to PDS failed; URLs are stored and will sync:', e);
                     }
-                } else {
-                    metadata.imageUrl = item.imageUrl;
-                    if (item.videoUrl) metadata.videoUrl = item.videoUrl;
                 }
 
                 const archive = this.getArchive();
