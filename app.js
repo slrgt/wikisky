@@ -32,7 +32,7 @@ class WikiApp {
             this.initQuillEditor();
             this.setupEventListeners();
             this.setupRouting();
-            this.handleRoute();
+            await this.handleRoute();
             this.updateStorageIndicator();
             this.updateBookmarksDisplay();
             this.updateThoughtsDisplay();
@@ -1348,6 +1348,11 @@ class WikiApp {
         const article = this.articles[key] || await this.storage.getArticle(key);
 
         const container = document.getElementById('article-container');
+        
+        if (!container) {
+            console.error('article-container element not found');
+            return;
+        }
 
         if (!article) {
             // If it's the main page and doesn't exist, create a helpful default one
