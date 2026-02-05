@@ -267,8 +267,76 @@ class WikiStorage {
                 }
             }
             await this.loadBookmarksAndHabitsFromBluesky();
+            // Push any articles or archive items created offline to the logged-in Bluesky account
+            await this.syncLocalArticlesToBluesky();
+            await this.syncLocalArchiveItemsToBluesky();
         } catch (e) {
             console.warn('Load archive from Bluesky failed:', e);
+        }
+    }
+
+    /** Push all local articles to the PDS (for articles created while offline). */
+    async syncLocalArticlesToBluesky() {
+        if (!this.blueskyClient?.accessJwt) return;
+        try {
+            await this.ensureValidToken();
+            const local = this.getAllArticlesFromLocal();
+            for (const key of Object.keys(local)) {
+                const article = local[key];
+                if (!article || !article.title) continue;
+                try {
+                    await this.saveArticleToBluesky(key, article.title, article.content || '');
+                } catch (e) {
+                    console.warn('Sync article to Bluesky failed:', key, e);
+                }
+            }
+        } catch (e) {
+            console.warn('Sync local articles to Bluesky failed:', e);
+        }
+    }
+
+    /** Upload local-only archive items (images stored in IndexedDB or fetchable URLs) to PDS and create artboard records. */
+    async syncLocalArchiveItemsToBluesky() {
+        if (!this.blueskyClient?.accessJwt) return;
+        try {
+            await this.ensureValidToken();
+            const archive = this.getArchive();
+            let updated = false;
+            for (const item of archive) {
+                if (item.atBlobRef) {
+                    try { await this._createArtboardItemOnPDS(item); } catch (_) {}
+                    continue;
+                }
+                let blob = null;
+                if (item.filename) {
+                    blob = await this.getFileFromIndexedDB(item.filename);
+                    if (blob && !(blob instanceof Blob)) blob = null;
+                }
+                if (!blob && item.imageUrl && typeof item.imageUrl === 'string' && item.imageUrl.startsWith('http')) {
+                    try {
+                        const res = await fetch(item.imageUrl, { mode: 'cors' });
+                        if (res.ok) blob = await res.blob();
+                    } catch (_) {}
+                }
+                if (!blob) continue;
+                const mimeType = blob.type || 'image/jpeg';
+                try {
+                    const blobResult = await this.uploadBlobToAtProtocol(blob, mimeType);
+                    item.atBlobRef = blobResult.ref;
+                    item.atBlobRefDid = this.blueskyClient.did;
+                    item.imageUrl = this.getAtProtocolBlobUrl(blobResult.ref?.$link || blobResult.ref, this.blueskyClient.did);
+                    await this._createArtboardItemOnPDS(item);
+                    updated = true;
+                } catch (e) {
+                    console.warn('Sync archive item to Bluesky failed:', item.id, e);
+                }
+            }
+            if (updated) {
+                localStorage.setItem('xoxowiki-archive', JSON.stringify(archive));
+                await this.syncArchiveToBlueskyIfConnected();
+            }
+        } catch (e) {
+            console.warn('Sync local archive items to Bluesky failed:', e);
         }
     }
 
