@@ -149,7 +149,9 @@ class WikiStorage {
     }
 
     async _deleteArtboardItemOnPDS(rkey) {
-        if (!this.blueskyClient?.accessJwt) return;
+        if (!this.blueskyClient?.accessJwt) {
+            throw new Error('Not connected to Bluesky - cannot delete from PDS');
+        }
         const resolvedPds = await this._resolvePdsUrlForDid(this.blueskyClient.did);
         this.blueskyClient.pdsUrl = resolvedPds;
         const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
@@ -166,7 +168,15 @@ class WikiStorage {
         });
         if (!res.ok && res.status !== 404) {
             const err = await res.json().catch(() => ({}));
-            throw new Error(err.message || err.error || 'Failed to delete from PDS');
+            const msg = err.message || err.error || '';
+            const errCode = err.error || '';
+            const isRecordNotFound = res.status === 404 || errCode === 'RecordNotFound' || (typeof msg === 'string' && /RecordNotFound|record not found/i.test(msg) && res.status >= 400 && res.status < 500);
+            if (isRecordNotFound) {
+                // Already deleted, that's fine
+                return;
+            }
+            const pdsHost = base.replace(/^https?:\/\//, '').split('/')[0];
+            throw new Error(`PDS (${pdsHost}) returned ${res.status}: ${msg || errCode || 'Could not delete artboard item'}. rkey: ${safeRkey}`);
         }
     }
 
@@ -186,7 +196,9 @@ class WikiStorage {
     }
 
     async _deleteArtboardAlbumOnPDS(rkey) {
-        if (!this.blueskyClient?.accessJwt) return;
+        if (!this.blueskyClient?.accessJwt) {
+            throw new Error('Not connected to Bluesky - cannot delete album from PDS');
+        }
         const resolvedPds = await this._resolvePdsUrlForDid(this.blueskyClient.did);
         this.blueskyClient.pdsUrl = resolvedPds;
         const session = JSON.parse(localStorage.getItem('bluesky-session') || '{}');
@@ -203,7 +215,15 @@ class WikiStorage {
         });
         if (!res.ok && res.status !== 404) {
             const err = await res.json().catch(() => ({}));
-            throw new Error(err.message || err.error || 'Failed to delete album from PDS');
+            const msg = err.message || err.error || '';
+            const errCode = err.error || '';
+            const isRecordNotFound = res.status === 404 || errCode === 'RecordNotFound' || (typeof msg === 'string' && /RecordNotFound|record not found/i.test(msg) && res.status >= 400 && res.status < 500);
+            if (isRecordNotFound) {
+                // Already deleted, that's fine
+                return;
+            }
+            const pdsHost = base.replace(/^https?:\/\//, '').split('/')[0];
+            throw new Error(`PDS (${pdsHost}) returned ${res.status}: ${msg || errCode || 'Could not delete album'}. rkey: ${safeRkey}`);
         }
     }
 
@@ -3435,9 +3455,23 @@ class WikiStorage {
     }
 
     async deleteAlbum(id) {
+        // Delete from PDS first (source of truth) - this ensures it's actually deleted
         if (this.blueskyClient?.accessJwt) {
-            await this._deleteArtboardAlbumOnPDS(id);
+            try {
+                await this._deleteArtboardAlbumOnPDS(id);
+            } catch (e) {
+                // Only treat as "already gone" if error clearly says record not found
+                const msg = (e && e.message) || '';
+                const isRecordNotFound = /RecordNotFound|record not found|404/i.test(msg) && !/still exists|accepted but/i.test(msg);
+                if (!isRecordNotFound) {
+                    // PDS deletion failed - throw error so caller knows
+                    console.error('Failed to delete album from PDS:', id, e);
+                    throw e;
+                }
+                // Record not found means it's already deleted, continue
+            }
         }
+        // Only delete locally if PDS deletion succeeded (or not using PDS)
         const albums = this.getAlbums().filter(a => a.id !== id);
         localStorage.setItem('xoxowiki-albums', JSON.stringify(albums));
         const archive = this.getArchive().map(a => {

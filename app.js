@@ -1301,6 +1301,9 @@ class WikiApp {
             await this.showBrowsePage();
         } else if (articleKey === 'habits') {
             this.showHabitsPage();
+        } else if (articleKey.startsWith('profile:')) {
+            const username = decodeURIComponent(articleKey.replace('profile:', ''));
+            await this.showUserProfile(username);
         } else if (articleKey === 'main') {
             await this.showArticle('main', sectionId);
         } else {
@@ -2358,6 +2361,7 @@ class WikiApp {
         
         // Get comments for this article
         const comments = this.storage.getComments(key);
+        const topLevelComments = comments.filter(c => !c.parentId);
         const commentsHtml = this.renderComments(key, comments);
         
         // Get remixed versions of this article
@@ -2391,7 +2395,7 @@ class WikiApp {
             ${backlinksHtml}
             ${remixesHtml}
             <div class="article-comments-section">
-                <h2>Discussion</h2>
+                <h2>Discussion${topLevelComments.length > 0 ? ` <span class="comment-count">(${topLevelComments.length} ${topLevelComments.length === 1 ? 'comment' : 'comments'})</span>` : ''}</h2>
                 <div class="comment-form">
                     <textarea id="new-comment-text" placeholder="Add a comment..." rows="3"></textarea>
                     <button class="btn-primary" onclick="window.wikiApp.addComment('${key}')" style="margin-top: 0.5em;">Post Comment</button>
@@ -4401,20 +4405,37 @@ class WikiApp {
             return '<p style="color: #54595d; font-style: italic;">No comments yet. Be the first to comment!</p>';
         }
         
+        const countReplies = (comment) => {
+            let count = comment.replies ? comment.replies.length : 0;
+            if (comment.replies) {
+                comment.replies.forEach(reply => {
+                    count += countReplies(reply);
+                });
+            }
+            return count;
+        };
+        
         const renderComment = (comment, depth = 0) => {
             const indent = depth > 0 ? ` style="margin-left: ${depth * 2}em; padding-left: 1em; border-left: 2px solid #a7d7f9;"` : '';
             const date = new Date(comment.timestamp).toLocaleString();
+            const hasReplies = comment.replies && comment.replies.length > 0;
+            const replyCount = countReplies(comment);
             let repliesHtml = '';
             
-            if (comment.replies && comment.replies.length > 0) {
-                repliesHtml = comment.replies.map(reply => renderComment(reply, depth + 1)).join('');
+            if (hasReplies) {
+                repliesHtml = `<div class="comment-replies" id="comment-replies-${comment.id}">${comment.replies.map(reply => renderComment(reply, depth + 1)).join('')}</div>`;
             }
+            
+            const minimizeIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 14px; height: 14px;"><path d="M18 15l-6-6-6 6"/></svg>`;
+            const expandIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 14px; height: 14px;"><path d="M6 9l6 6 6-6"/></svg>`;
             
             return `
                 <div class="comment" id="comment-${comment.id}" data-comment-id="${comment.id}"${indent}>
                     <div class="comment-header">
-                        <strong class="comment-author" id="comment-author-${comment.id}">${this.escapeHtml(comment.author)}</strong>
+                        ${hasReplies ? `<button class="comment-minimize-btn" onclick="window.wikiApp.toggleCommentMinimize('${comment.id}')" title="Minimize/Expand" aria-label="Minimize comment">${minimizeIcon}</button>` : '<span class="comment-minimize-spacer"></span>'}
+                        <strong class="comment-author clickable-username" id="comment-author-${comment.id}" onclick="window.wikiApp.viewUserProfile('${this.escapeHtml(comment.author)}')" title="View ${this.escapeHtml(comment.author)}'s profile">${this.escapeHtml(comment.author)}</strong>
                         <span class="comment-date">${date}</span>
+                        ${hasReplies ? `<span class="comment-reply-count" title="${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}">${replyCount}</span>` : ''}
                         <button class="comment-reply-btn" onclick="window.wikiApp.showReplyForm('${articleKey}', '${comment.id}')" style="margin-left: 1em; font-size: 12px; padding: 0.2em 0.5em;">Reply</button>
                     </div>
                     <div class="comment-text">${this.escapeHtml(comment.text).replace(/\n/g, '<br>')}</div>
@@ -4465,6 +4486,170 @@ class WikiApp {
             if (replyForm) {
                 replyForm.style.display = 'none';
             }
+        }
+    }
+
+    toggleCommentMinimize(commentId) {
+        const commentEl = document.getElementById(`comment-${commentId}`);
+        const repliesEl = document.getElementById(`comment-replies-${commentId}`);
+        const minimizeBtn = commentEl?.querySelector('.comment-minimize-btn');
+        
+        if (!commentEl || !repliesEl || !minimizeBtn) return;
+        
+        const isMinimized = repliesEl.style.display === 'none';
+        repliesEl.style.display = isMinimized ? '' : 'none';
+        commentEl.classList.toggle('comment-minimized', !isMinimized);
+        
+        // Update icon
+        if (isMinimized) {
+            minimizeBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 14px; height: 14px;"><path d="M18 15l-6-6-6 6"/></svg>`;
+        } else {
+            minimizeBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 14px; height: 14px;"><path d="M6 9l6 6 6-6"/></svg>`;
+        }
+    }
+
+    async viewUserProfile(username) {
+        // Navigate to profile view
+        this.navigate(`profile:${encodeURIComponent(username)}`);
+    }
+
+    async showUserProfile(username) {
+        const container = document.getElementById('article-container');
+        if (!container) return;
+        
+        this.currentArticleKey = `profile:${username}`;
+        
+        container.innerHTML = `
+            ${this.renderSectionNav()}
+            <div class="article-header">
+                <h1>Profile: ${this.escapeHtml(username)}</h1>
+            </div>
+            <div id="profile-content" style="padding: 2em 0;">
+                <p style="color: #54595d;">Loading posts from ${this.escapeHtml(username)}...</p>
+            </div>
+        `;
+        
+        // Fetch posts from this user
+        try {
+            await this.loadUserProfilePosts(username);
+        } catch (error) {
+            console.error('Error loading user profile:', error);
+            const profileContent = document.getElementById('profile-content');
+            if (profileContent) {
+                profileContent.innerHTML = `<p style="color: #d32f2f;">Error loading profile: ${this.escapeHtml(error.message || 'Unknown error')}</p>`;
+            }
+        }
+    }
+
+    async loadUserProfilePosts(username) {
+        const profileContent = document.getElementById('profile-content');
+        if (!profileContent) return;
+        
+        try {
+            // Resolve handle to DID
+            let did;
+            try {
+                const resolveRes = await fetch(`https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(username.replace('@', ''))}`);
+                if (!resolveRes.ok) throw new Error('Could not resolve handle');
+                const resolveData = await resolveRes.json();
+                did = resolveData.did;
+            } catch (e) {
+                throw new Error('Could not resolve Bluesky handle: ' + (e.message || 'Unknown error'));
+            }
+            
+            // Fetch author feed
+            let cursor = null;
+            const posts = [];
+            let hasMore = true;
+            
+            while (hasMore && posts.length < 50) {
+                const url = cursor 
+                    ? `https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(did)}&limit=25&cursor=${encodeURIComponent(cursor)}`
+                    : `https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(did)}&limit=25`;
+                
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('Failed to load posts');
+                const data = await res.json();
+                
+                if (data.feed && data.feed.length > 0) {
+                    posts.push(...data.feed);
+                    cursor = data.cursor;
+                    hasMore = !!cursor;
+                } else {
+                    hasMore = false;
+                }
+            }
+            
+            if (posts.length === 0) {
+                profileContent.innerHTML = `<p style="color: #54595d;">No posts found from ${this.escapeHtml(username)}.</p>`;
+                return;
+            }
+            
+            // Filter posts with media
+            const mediaPosts = posts.filter(post => {
+                const embed = post.post?.embed;
+                return embed && (embed.images || embed.video || embed.media);
+            });
+            
+            if (mediaPosts.length === 0) {
+                profileContent.innerHTML = `<p style="color: #54595d;">No media posts found from ${this.escapeHtml(username)}.</p>`;
+                return;
+            }
+            
+            // Render posts similar to browse page
+            const postsHtml = mediaPosts.map(post => {
+                const author = post.post?.author || {};
+                const authorHandle = author.handle || username;
+                const authorDisplayName = author.displayName || authorHandle;
+                const embed = post.post?.embed;
+                const postText = (post.post?.record?.text || '').trim();
+                const postUri = post.post?.uri || '';
+                const createdAt = post.post?.record?.createdAt || '';
+                
+                let mediaHtml = '';
+                if (embed?.images && embed.images.length > 0) {
+                    const firstImage = embed.images[0];
+                    mediaHtml = `<img src="${this.escapeHtml(firstImage.thumb || firstImage.fullsize || '')}" alt="${this.escapeHtml(firstImage.alt || '')}" loading="lazy">`;
+                } else if (embed?.video) {
+                    mediaHtml = `<video src="${this.escapeHtml(embed.video.thumb || embed.video.ref?.link || '')}" controls></video>`;
+                }
+                
+                // Convert AT URI to bsky.app URL
+                const atUriMatch = postUri.match(/at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)/);
+                let bskyUrl = '';
+                if (atUriMatch) {
+                    const did = atUriMatch[1];
+                    const rkey = atUriMatch[2];
+                    // Try to get handle from author, fallback to DID
+                    const handle = authorHandle || did;
+                    bskyUrl = `https://bsky.app/profile/${handle}/post/${rkey}`;
+                }
+                
+                return `
+                    <div class="browse-item browse-item-clickable" ${bskyUrl ? `onclick="window.open('${this.escapeHtml(bskyUrl)}', '_blank')"` : ''}>
+                        <div class="browse-item-media">${mediaHtml}</div>
+                        <div class="browse-item-info">
+                            <div class="browse-item-header">
+                                <span class="browse-author">${this.escapeHtml(authorDisplayName)}</span>
+                                <span class="browse-time">${this.formatRelativeTime(createdAt)}</span>
+                            </div>
+                            ${postText ? `<p class="browse-snippet">${this.escapeHtml(postText.slice(0, 150))}${postText.length > 150 ? '...' : ''}</p>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            profileContent.innerHTML = `
+                <div style="margin-bottom: 1em; color: #54595d;">
+                    Showing ${mediaPosts.length} media ${mediaPosts.length === 1 ? 'post' : 'posts'} from ${this.escapeHtml(username)}
+                </div>
+                <div class="browse-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1em;">
+                    ${postsHtml}
+                </div>
+            `;
+        } catch (error) {
+            console.error('Error loading user profile posts:', error);
+            profileContent.innerHTML = `<p style="color: #d32f2f;">Error loading profile: ${this.escapeHtml(error.message || 'Unknown error')}</p>`;
         }
     }
 
@@ -7938,6 +8123,12 @@ ${document.body.innerHTML}
                 // Support both old single albumId and new albumIds array
                 const itemAlbums = i.albumIds || (i.albumId ? [i.albumId] : []);
                 return itemAlbums.includes(albumFilter);
+            });
+        } else {
+            // When showing "All", filter out items with no albums assigned
+            items = items.filter(i => {
+                const itemAlbums = i.albumIds || (i.albumId ? [i.albumId] : []);
+                return itemAlbums.length > 0;
             });
         }
         
