@@ -32,7 +32,7 @@ class WikiApp {
             this.initQuillEditor();
             this.setupEventListeners();
             this.setupRouting();
-            await this.handleRoute();
+            this.handleRoute();
             this.updateStorageIndicator();
             this.updateBookmarksDisplay();
             this.updateThoughtsDisplay();
@@ -42,15 +42,6 @@ class WikiApp {
         } catch (error) {
             console.error('Error initializing wiki app:', error);
             console.log('Wiki initialized with errors. Some features may not work.');
-            // Ensure content is displayed even if there's an error
-            try {
-                const container = document.getElementById('article-container');
-                if (container && !container.innerHTML.trim()) {
-                    await this.showArticle('main');
-                }
-            } catch (fallbackError) {
-                console.error('Error showing fallback content:', fallbackError);
-            }
         }
     }
 
@@ -1349,21 +1340,14 @@ class WikiApp {
     }
 
     async showArticle(key, sectionId = null) {
-        try {
-            this.currentArticleKey = key;
-            
-            // Reload articles to ensure we have latest
-            await this.loadArticles();
-            
-            const article = this.articles[key] || await this.storage.getArticle(key);
+        this.currentArticleKey = key;
+        
+        // Reload articles to ensure we have latest
+        await this.loadArticles();
+        
+        const article = this.articles[key] || await this.storage.getArticle(key);
 
-            const container = document.getElementById('article-container');
-            if (!container) {
-                console.error('article-container element not found!');
-                // Try to show error message in body if container doesn't exist
-                document.body.innerHTML = '<div style="padding: 2em; font-family: sans-serif;"><h1>Error</h1><p>Article container not found. Please refresh the page.</p></div>';
-                return;
-            }
+        const container = document.getElementById('article-container');
 
         if (!article) {
             // If it's the main page and doesn't exist, create a helpful default one
@@ -2470,25 +2454,6 @@ class WikiApp {
                     }, 2000);
                 }
             }, 100);
-        }
-        } catch (error) {
-            console.error('Error in showArticle:', error);
-            const container = document.getElementById('article-container');
-            if (container) {
-                container.innerHTML = `
-                    <div style="padding: 2em;">
-                        <h1>Error Loading Article</h1>
-                        <p>There was an error loading "${key}". Please try refreshing the page.</p>
-                        <p><a href="#main" data-route="main">Return to home page</a></p>
-                        <details style="margin-top: 1em;">
-                            <summary>Error details</summary>
-                            <pre style="background: #f8f9fa; padding: 1em; overflow: auto;">${this.escapeHtml(error.toString())}</pre>
-                        </details>
-                    </div>
-                `;
-            } else {
-                console.error('Could not display error - container not found');
-            }
         }
     }
 
