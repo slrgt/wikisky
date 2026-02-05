@@ -7754,64 +7754,6 @@ ${document.body.innerHTML}
         
         // Show popular feeds on modal open
         showPopularFeeds();
-                    const customFeeds = this.storage.getCustomFeeds();
-                    const customFeedUris = new Set(customFeeds.map(f => f.uri));
-                    
-                    resultsEl.innerHTML = feeds.map(feed => {
-                        const isSaved = customFeedUris.has(feed.uri);
-                        return `
-                            <div class="feed-search-result" style="padding: 1em; border: 1px solid #e5e9ed; border-radius: 6px; margin-bottom: 0.75em; background: #f8f9fa;">
-                                <div style="display: flex; align-items: flex-start; gap: 0.75em;">
-                                    ${feed.avatar ? `<img src="${feed.avatar}" alt="" style="width: 48px; height: 48px; border-radius: 6px; object-fit: cover;">` : '<div style="width: 48px; height: 48px; border-radius: 6px; background: #e5e9ed; display: flex; align-items: center; justify-content: center; color: #999; font-size: 1.5rem;">📰</div>'}
-                                    <div style="flex: 1; min-width: 0;">
-                                        <div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.25em; word-break: break-word;">${this.escapeHtml(feed.name)}</div>
-                                        ${feed.description ? `<div style="font-size: 0.85rem; color: #555; margin-bottom: 0.5em; word-break: break-word;">${this.escapeHtml(feed.description)}</div>` : ''}
-                                        <div style="display: flex; align-items: center; gap: 1em; font-size: 0.8rem; color: #999;">
-                                            ${feed.creator ? `<span>by @${this.escapeHtml(feed.creator)}</span>` : ''}
-                                            ${feed.likeCount > 0 ? `<span>${feed.likeCount} likes</span>` : ''}
-                                        </div>
-                                    </div>
-                                    <button type="button" class="feed-add-btn ${isSaved ? 'btn-secondary' : 'btn-primary'}" data-feed-uri="${this.escapeHtml(feed.uri)}" data-feed-name="${this.escapeHtml(feed.name)}" data-feed-desc="${this.escapeHtml(feed.description || '')}" style="font-size: 0.85rem; padding: 0.4em 0.8em; white-space: nowrap;">
-                                        ${isSaved ? '✓ Saved' : 'Add'}
-                                    </button>
-                                </div>
-                            </div>
-                        `;
-                    }).join('');
-                    
-                    // Add click handlers for add buttons
-                    resultsEl.querySelectorAll('.feed-add-btn').forEach(btn => {
-                        btn.addEventListener('click', async (e) => {
-                            const uri = e.target.getAttribute('data-feed-uri');
-                            const name = e.target.getAttribute('data-feed-name');
-                            const desc = e.target.getAttribute('data-feed-desc');
-                            
-                            if (customFeedUris.has(uri)) {
-                                // Remove feed
-                                this.storage.removeCustomFeed(uri);
-                                this.showUpdateNotification(`Removed "${name}"`);
-                                e.target.textContent = 'Add';
-                                e.target.className = 'feed-add-btn btn-primary';
-                            } else {
-                                // Add feed
-                                this.storage.saveCustomFeed({ uri, name, description: desc });
-                                this.showUpdateNotification(`Added "${name}"`);
-                                e.target.textContent = '✓ Saved';
-                                e.target.className = 'feed-add-btn btn-secondary';
-                            }
-                            
-                            // Reload browse page to update feed list
-                            this.browseFeedCursor = null;
-                            this.showBrowsePage(null, false);
-                        });
-                    });
-                }
-            } catch (e) {
-                resultsEl.innerHTML = `<p style="color: #d32f2f; text-align: center; padding: 2em;">Error searching feeds: ${this.escapeHtml(e.message || 'Unknown error')}</p>`;
-            } finally {
-                searchBtn.disabled = false;
-            }
-        };
         
         if (searchBtn) {
             searchBtn.addEventListener('click', performSearch);
